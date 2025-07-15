@@ -72,4 +72,4 @@ USER app
 
 EXPOSE 8080
 
-CMD ["php", "app/index.php"]
+CMD ["php", "app/index.php", "start"]

@@ -1,0 +1,5 @@
+{
+    "require": {
+        "hyperf/nano": "^2.0"
+    }
+}

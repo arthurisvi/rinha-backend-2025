@@ -1,0 +1,119 @@
+version: '3.8'
+
+# Template base para as APIs em desenvolvimento
+x-api-template: &api-template
+  build:
+    context: .
+    dockerfile: cmd/api/Dockerfile
+  volumes:
+    # Monta o código da aplicação para hot-reload
+    - ./cmd/api/app:/opt/www/app:rw
+  environment:
+    - APP_ENV=development
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+  depends_on:
+    - redis
+  networks:
+    - rinha-network
+  deploy:
+    resources:
+      limits:
+        cpus: "0.35"
+        memory: "80MB"
+
+services:
+  # Load Balancer - Nginx
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api_1
+      - api_2
+    networks:
+      - rinha-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "20MB"
+
+  # API Instance 1
+  api_1:
+    <<: *api-template
+
+  # API Instance 2
+  api_2:
+    <<: *api-template
+
+  # Worker - Payment Processing
+  worker_payments:
+    build:
+      context: .
+      dockerfile: cmd/workers/payment/Dockerfile
+    volumes:
+      # Monta apenas o arquivo PHP principal
+      - ./cmd/workers/payment/index.php:/opt/www/index.php:rw
+    environment:
+      - APP_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+    depends_on:
+      - redis
+    networks:
+      - rinha-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.4"
+          memory: "70MB"
+
+  # Worker - Health Check
+  worker_health:
+    build:
+      context: .
+      dockerfile: cmd/workers/health-check/Dockerfile
+    volumes:
+      # Monta apenas o arquivo PHP principal
+      - ./cmd/workers/health-check/index.php:/opt/www/index.php:rw
+    environment:
+      - APP_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+    depends_on:
+      - redis
+    networks:
+      - rinha-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "30MB"
+
+  # Redis com persistência para desenvolvimento
+  redis:
+    image: redis:alpine
+    command: redis-server --appendonly yes --maxmemory 50mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-dev-data:/data
+    networks:
+      - rinha-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "70MB"
+
+volumes:
+  redis-dev-data:
+
+networks:
+  rinha-network:
+    driver: bridge

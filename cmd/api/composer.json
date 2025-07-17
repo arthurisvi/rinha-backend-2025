@@ -1,5 +1,6 @@
 {
     "require": {
-        "hyperf/nano": "^2.0"
+        "hyperf/nano": "^2.0",
+        "hyperf/redis": "^3.1"
     }
 }

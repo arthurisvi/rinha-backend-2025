@@ -16,6 +16,7 @@ x-api-template: &api-template
     - redis
   networks:
     - rinha-network
+    - payment-processor
   deploy:
     resources:
       limits:
@@ -35,6 +36,7 @@ services:
       - api_2
     networks:
       - rinha-network
+      - payment-processor
     deploy:
       resources:
         limits:
@@ -67,6 +69,7 @@ services:
       - redis
     networks:
       - rinha-network
+      - payment-processor
     deploy:
       resources:
         limits:
@@ -91,18 +94,17 @@ services:
       - redis
     networks:
       - rinha-network
+      - payment-processor
     deploy:
       resources:
         limits:
           cpus: "0.1"
           memory: "30MB"
 
-  # Redis com persistência para desenvolvimento
+  # Redis
   redis:
     image: redis:alpine
     command: redis-server --appendonly yes --maxmemory 50mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis-dev-data:/data
     networks:
       - rinha-network
     deploy:
@@ -111,9 +113,8 @@ services:
           cpus: "0.2"
           memory: "70MB"
 
-volumes:
-  redis-dev-data:
-
 networks:
+  payment-processor:
+    external: true
   rinha-network:
     driver: bridge

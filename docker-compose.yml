@@ -13,6 +13,7 @@ x-api-template: &api-template
     - redis
   networks:
     - rinha-network
+    - payment-processor
   deploy:
     resources:
       limits:
@@ -32,6 +33,7 @@ services:
       - api_2
     networks:
       - rinha-network
+      - payment-processor
     deploy:
       resources:
         limits:
@@ -61,7 +63,7 @@ services:
       - redis
     networks:
       - rinha-network
-      #- payment-processor
+      - payment-processor
     deploy:
       resources:
         limits:
@@ -83,7 +85,7 @@ services:
       - redis
     networks:
       - rinha-network
-      #- payment-processor
+      - payment-processor
     deploy:
       resources:
         limits:

@@ -20,24 +20,21 @@ function getHealthStatusProcessor(string $processorName, string $url): array|boo
         $path = $parsedUrl['path'] ?? '/';
 
         // HTTP Client assíncrono do Swoole
-        $client = new Swoole\Coroutine\Http\Client($host, $port, true);
+        $client = new Swoole\Coroutine\Http\Client($host, $port);
         $client->set(['timeout' => 3]); // Timeout de 3 segundos
 
         $success = $client->get($path);
 
         if ($success && $client->statusCode === 200) {
-            echo "✅ $processorName: Healthy (Response: {$client->statusCode})\n";
+            echo "✅ $processorName: Healthy (Response: {$client->statusCode} - Body: " . $client->getBody() . ")\n";
             return [
-                '$processorName' => [
-                    'failing' => false,
-                    'minResponseTime' => 0
-                ]
+                $processorName => json_decode($client->getBody(), true)
             ];
         }
 
-        $client->close();
+        echo "❌ $processorName: Unhealthy (Status: {$client->statusCode})\n";
 
-        echo "❌ $processorName: Unhealthy\n";
+        $client->close();
 
         return false;
     } catch (Exception $e) {
@@ -92,7 +89,7 @@ Coroutine::create(function () {
         try {
             echo "\n🔄 Iniciando novo ciclo de health checks...\n";
 
-            $endpointPath = '/payments/health';
+            $endpointPath = '/payments/service-health';
 
             // Canal para sincronizar resultados
             $channel = new Channel(2);
@@ -115,8 +112,8 @@ Coroutine::create(function () {
             $results = [];
             for ($i = 0; $i < 2; $i++) {
                 $result = $channel->pop();
-                if ($result !== false) {
-                    $results[] = $result;
+                if ($result !== false && is_array($result)) {
+                    $results += $result;
                 }
             }
 

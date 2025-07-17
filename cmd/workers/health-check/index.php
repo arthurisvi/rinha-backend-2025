@@ -6,8 +6,6 @@ use Swoole\Runtime;
 use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Redis;
 
-use function Hyperf\Support\env;
-
 // Habilitar corrotinas para operações I/O (inclui Redis e HTTP)
 Runtime::enableCoroutine();
 
@@ -17,12 +15,12 @@ function getHealthStatusProcessor(string $processorName, string $url): array|boo
 
         // Parse da URL para extrair host e porta
         $parsedUrl = parse_url($url);
-        $host = $parsedUrl['host'];
-        $port = $parsedUrl['port'];
-        $path = $parsedUrl['path'];
+        $host = $parsedUrl['host'] ?? 'localhost';
+        $port = $parsedUrl['port'] ?? 443;
+        $path = $parsedUrl['path'] ?? '/';
 
         // HTTP Client assíncrono do Swoole
-        $client = new Swoole\Coroutine\Http\Client($host, $port);
+        $client = new Swoole\Coroutine\Http\Client($host, $port, true);
         $client->set(['timeout' => 3]); // Timeout de 3 segundos
 
         $success = $client->get($path);
@@ -48,10 +46,12 @@ function getHealthStatusProcessor(string $processorName, string $url): array|boo
     }
 }
 
-function saveBestHostProcessor(string $bestHost): void {
+function saveBestHostProcessor(int $bestHost): void {
     try {
         $redis = new Redis();
-        $connected = $redis->connect('redis', 6379, 2); // timeout 2s
+        $redisHost = getenv('REDIS_HOST') ?: 'redis';
+        $redisPort = getenv('REDIS_PORT') ?: 6379;
+        $connected = $redis->connect($redisHost, $redisPort, 2);
 
         if (!$connected) {
             throw new Exception("Falha ao conectar no Redis");
@@ -69,8 +69,22 @@ function saveBestHostProcessor(string $bestHost): void {
     }
 }
 
-function getBestHostProcessor(array $hosts): string {
-    return 'default';
+function getBestHostProcessor(array $hosts): int|null {
+    $defaultIsOn = $hosts['default']['failing'] == false;
+    $fallbackIsOn = $hosts['fallback']['failing'] == false;
+
+    //$defaultResponseTime = $hosts['default']['minResponseTime'];
+    //$fallbackResponseTime = $hosts['fallback']['minResponseTime'];
+
+    if ($defaultIsOn) {
+        return 1;
+    }
+
+    if ($fallbackIsOn) {
+        return 2;
+    }
+
+    return null;
 }
 
 Coroutine::create(function () {
@@ -85,14 +99,14 @@ Coroutine::create(function () {
 
             // Corrotina para health check do host default
             Coroutine::create(function () use ($channel, $endpointPath) {
-                $url = env('PROCESSOR_DEFAULT_URL') ?: 'http://payment-processor-default:8080';
+                $url = getenv('PROCESSOR_DEFAULT_URL') ?: 'http://payment-processor-default:8080';
                 $healthStatus = getHealthStatusProcessor('default', $url . $endpointPath);
                 $channel->push($healthStatus);
             });
 
             // Corrotina para health check do host fallback
             Coroutine::create(function () use ($channel, $endpointPath) {
-                $url = env('PROCESSOR_FALLBACK_URL') ?: 'http://payment-processor-fallback:8080';
+                $url = getenv('PROCESSOR_FALLBACK_URL') ?: 'http://payment-processor-fallback:8080';
                 $healthStatus = getHealthStatusProcessor('fallback', $url . $endpointPath);
                 $channel->push($healthStatus);
             });
@@ -101,26 +115,31 @@ Coroutine::create(function () {
             $results = [];
             for ($i = 0; $i < 2; $i++) {
                 $result = $channel->pop();
-                if ($result === false) {
-                    throw new \RuntimeException("Falha ao coletar resultado do health check");
+                if ($result !== false) {
+                    $results[] = $result;
                 }
-                $results[] = $result;
             }
 
             $channel->close();
+
+            if (empty($results)) {
+                throw new \RuntimeException("Falha ao coletar resultado do health check: ambos falharam");
+            }
 
             echo "Health checks concluídos, analisando resultados...\n";
 
             $bestHost = getBestHostProcessor($results);
 
-            saveBestHostProcessor($bestHost);
+            if (!$bestHost) {
+                saveBestHostProcessor($bestHost);
+            }
 
             echo "Aguardando próximo ciclo...\n";
 
             Coroutine::sleep(5);
         } catch (Exception $e) {
             echo "💥 Erro no loop principal: " . $e->getMessage() . "\n";
-            Coroutine::sleep(1);
+            Coroutine::sleep(5);
         }
     }
 });

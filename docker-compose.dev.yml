@@ -6,8 +6,7 @@ x-api-template: &api-template
     context: .
     dockerfile: cmd/api/Dockerfile
   volumes:
-    # Monta o código da aplicação para hot-reload
-    - ./cmd/api/app:/opt/www/app:rw
+    - ./cmd/api:/opt/www:rw
   environment:
     - APP_ENV=development
     - REDIS_HOST=redis

@@ -9,6 +9,15 @@ use Swoole\Coroutine\Redis;
 // Habilitar corrotinas para operações I/O (inclui Redis e HTTP)
 Runtime::enableCoroutine();
 
+// Conexão Redis criada uma vez e reutilizada
+$redis = new Redis();
+$redisHost = getenv('REDIS_HOST') ?: 'redis';
+$redisPort = getenv('REDIS_PORT') ?: 6379;
+$connected = $redis->connect($redisHost, $redisPort, 2);
+if (!$connected) {
+    throw new Exception("Falha ao conectar no Redis");
+}
+
 function getHealthStatusProcessor(string $processorName, string $url): array|bool {
     try {
         echo "Iniciando health check do $processorName...\n";
@@ -43,23 +52,15 @@ function getHealthStatusProcessor(string $processorName, string $url): array|boo
     }
 }
 
-function saveBestHostProcessor(int $bestHost): void {
+function saveBestHostProcessor(int $bestHost) {
+    global $redis, $redisHost, $redisPort;
     try {
-        $redis = new Redis();
-        $redisHost = getenv('REDIS_HOST') ?: 'redis';
-        $redisPort = getenv('REDIS_PORT') ?: 6379;
-        $connected = $redis->connect($redisHost, $redisPort, 2);
-
-        if (!$connected) {
-            throw new Exception("Falha ao conectar no Redis");
+        // Verifica se a conexão está ativa, senão reconecta
+        if (!$redis->connected) {
+            $redis->connect($redisHost, $redisPort, 2);
         }
-
         $key = "best-host-processor";
-
         $redis->setex($key, 5, $bestHost); // TTL de 5 segundos
-
-        $redis->close();
-
         echo "📝 Melhor host salvo: $bestHost\n";
     } catch (Exception $e) {
         echo "❌ Erro ao salvar status no Redis: " . $e->getMessage() . "\n";

@@ -59,7 +59,8 @@ O sistema segue uma arquitetura distribuída com alta disponibilidade:
 - **Corrotinas Swoole**: I/O não-bloqueante
 - **Connection Pooling**: Reutilização de conexões Redis
 - **Load Balancing**: Distribuição inteligente de carga
-- **Worker Pool**:
+- **Worker Pool**: Múltiplos workers são utilizados para processar pagamentos em paralelo
+- **Controle de Backpressure**: Mecanismo que regula o ritmo de entrada de novas requisições na fila
 
 ### Resilência
 - **Health Check Automático**: Monitoramento contínuo dos processadores

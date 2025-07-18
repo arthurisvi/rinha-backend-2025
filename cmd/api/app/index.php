@@ -11,6 +11,8 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 $app = AppFactory::create('0.0.0.0', 8080);
 
+// https://medium.com/@anil.goyal0057/distributed-locking-mechanism-using-redis-26c17d9f3d5f
+
 $app->config([
     'redis.default' => [
         'host' => env('REDIS_HOST', 'localhost'),
@@ -22,10 +24,10 @@ $app->config([
         'retry_interval' => 0,
         'read_timeout' => 0.0,
         'pool' => [
-            'min_connections' => 1,
-            'max_connections' => 20,
-            'connect_timeout' => 5.0,
-            'wait_timeout' => 3.0,
+            'min_connections' => 5,
+            'max_connections' => 100,
+            'connect_timeout' => 3.0,
+            'wait_timeout' => 2.0,
             'heartbeat' => -1,
             'max_idle_time' => (float) env('REDIS_MAX_IDLE_TIME', 60),
         ],
@@ -39,24 +41,159 @@ $app->config([
 ]);
 
 $app->post('/payments', function (ServerRequestInterface $request) use ($app) {
+    $requestId = uniqid('req_');
+    $startTime = microtime(true);
+
+    echo "\n�� [{$requestId}] === NOVA REQUISIÇÃO ===\n";
+    echo "📅 Timestamp: " . date('Y-m-d H:i:s') . "\n";
+
     $body = $request->getParsedBody();
     $correlationId = $body['correlationId'] ?? null;
     $amount = $body['amount'] ?? null;
 
-    /** @var \Hyperf\Redis\RedisProxy $redis */
-    $redis = $app->getContainer()->get(RedisFactory::class)->get('default');
-    $paymentInProcess = $redis->get($correlationId);
+    echo "📋 [{$requestId}] Dados recebidos:\n";
+    echo "   - correlationId: {$correlationId}\n";
+    echo "   - amount: {$amount}\n";
+    echo "   - Body completo: " . json_encode($body) . "\n";
 
-    if (!$paymentInProcess) {
-        // TODO: publicar na fila para processamento
+    // Validação
+    if (!$correlationId || !$amount) {
+        echo "❌ [{$requestId}] Validação falhou - dados incompletos\n";
         return (new Response())
-            ->withStatus(202)
-            ->withHeader('Content-Type', 'application/json');
+            ->withStatus(400)
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+                'error' => 'correlationId and amount are required',
+                'requestId' => $requestId
+            ])));
     }
 
-    return (new Response())
-        ->withStatus(409)
-        ->withHeader('Content-Type', 'application/json');
+    /** @var \Hyperf\Redis\RedisProxy $redis */
+    $redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+
+    echo "�� [{$requestId}] Conectando ao Redis...\n";
+
+    // Verificar se já foi processado
+    $processedKey = "payment_processed:{$correlationId}";
+    $alreadyProcessed = $redis->get($processedKey);
+
+    echo "�� [{$requestId}] Verificando se já foi processado:\n";
+    echo "   - Key: {$processedKey}\n";
+    echo "   - Valor: " . ($alreadyProcessed ?: 'null') . "\n";
+
+    if ($alreadyProcessed) {
+        echo "✅ [{$requestId}] Pagamento já processado anteriormente\n";
+        $duration = round((microtime(true) - $startTime) * 1000, 2);
+        echo "⏱️ [{$requestId}] Duração: {$duration}ms\n";
+
+        return (new Response())
+            ->withStatus(200)
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+                'message' => 'Payment already processed successfully',
+                'correlationId' => $correlationId,
+                'requestId' => $requestId,
+                'duration' => $duration
+            ])));
+    }
+
+    // Tentar adquirir lock
+    $lockKey = "payment_lock:{$correlationId}";
+    $lockValue = uniqid('lock_');
+    $lockTTL = 60;
+
+    echo "🔒 [{$requestId}] Tentando adquirir lock:\n";
+    echo "   - Lock Key: {$lockKey}\n";
+    echo "   - Lock Value: {$lockValue}\n";
+    echo "   - TTL: {$lockTTL}s\n";
+
+    $acquiredLock = $redis->set($lockKey, $lockValue, ['NX', 'EX' => $lockTTL]);
+
+    echo "🔒 [{$requestId}] Resultado do lock: " . ($acquiredLock ? 'ADQUIRIDO' : 'FALHOU') . "\n";
+
+    if (!$acquiredLock) {
+        // Verificar se existe lock
+        $existingLock = $redis->get($lockKey);
+        $lockTTL = $redis->ttl($lockKey);
+
+        echo "⚠️ [{$requestId}] Lock já existe:\n";
+        echo "   - Valor atual: {$existingLock}\n";
+        echo "   - TTL restante: {$lockTTL}s\n";
+
+        $duration = round((microtime(true) - $startTime) * 1000, 2);
+        echo "⏱️ [{$requestId}] Duração: {$duration}ms\n";
+
+        return (new Response())
+            ->withStatus(409)
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+                'error' => 'Payment already being processed',
+                'correlationId' => $correlationId,
+                'requestId' => $requestId,
+                'duration' => $duration,
+                'lockInfo' => [
+                    'value' => $existingLock,
+                    'ttl' => $lockTTL
+                ]
+            ])));
+    }
+
+    try {
+        echo "✅ [{$requestId}] Lock adquirido com sucesso\n";
+
+        // Enfileirar para processamento
+        $paymentData = [
+            'correlationId' => $correlationId,
+            'amount' => $amount,
+            'requestedAt' => date('c'),
+            'lockValue' => $lockValue,
+            'requestId' => $requestId
+        ];
+
+        echo "📤 [{$requestId}] Enfileirando pagamento:\n";
+        echo "   - Queue: payment_queue\n";
+        echo "   - Data: " . json_encode($paymentData) . "\n";
+
+        $queueResult = $redis->lpush('payment_queue', json_encode($paymentData));
+
+        echo "📤 [{$requestId}] Resultado do enfileiramento: {$queueResult}\n";
+
+        $duration = round((microtime(true) - $startTime) * 1000, 2);
+        echo "⏱️ [{$requestId}] Duração: {$duration}ms\n";
+        echo "✅ [{$requestId}] === REQUISIÇÃO FINALIZADA ===\n";
+
+        return (new Response())
+            ->withStatus(202)
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+                'message' => 'Payment accepted for processing',
+                'correlationId' => $correlationId,
+                'requestId' => $requestId,
+                'duration' => $duration
+            ])));
+    } catch (Exception $e) {
+        echo "💥 [{$requestId}] ERRO: " . $e->getMessage() . "\n";
+        echo "📚 [{$requestId}] Stack trace: " . $e->getTraceAsString() . "\n";
+
+        // Liberar lock em caso de erro
+        if ($redis->get($lockKey) === $lockValue) {
+            $redis->del($lockKey);
+            echo "🔓 [{$requestId}] Lock liberado devido ao erro\n";
+        }
+
+        $duration = round((microtime(true) - $startTime) * 1000, 2);
+        echo "⏱️ [{$requestId}] Duração: {$duration}ms\n";
+        echo "❌ [{$requestId}] === REQUISIÇÃO COM ERRO ===\n";
+
+        return (new Response())
+            ->withStatus(500)
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+                'error' => 'Internal server error',
+                'requestId' => $requestId,
+                'duration' => $duration
+            ])));
+    }
 });
 
 $app->run();

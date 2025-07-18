@@ -62,7 +62,7 @@ case "$1" in
         ;;
     "prod")
         echo "🏭 Iniciando ambiente de PRODUÇÃO..."
-        $PROD_COMPOSE up --build
+        $PROD_COMPOSE up --build -d
         ;;
     "monitor")
         echo "📈 Monitorando recursos..."

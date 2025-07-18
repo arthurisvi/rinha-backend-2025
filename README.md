@@ -88,7 +88,7 @@ cd rinha-backend-2025
 ./dev.sh up
 
 # Ou manualmente
-docker-compose -f docker-compose.dev.yml up --build
+docker-compose -f docker-compose.dev.yml up --build -d
 ```
 
 ### Produção (Teste Final)

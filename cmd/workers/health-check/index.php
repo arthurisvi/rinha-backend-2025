@@ -9,15 +9,6 @@ use Swoole\Coroutine\Redis;
 // Habilitar corrotinas para operações I/O (inclui Redis e HTTP)
 Runtime::enableCoroutine();
 
-// Conexão Redis criada uma vez e reutilizada
-$redis = new Redis();
-$redisHost = getenv('REDIS_HOST') ?: 'redis';
-$redisPort = getenv('REDIS_PORT') ?: 6379;
-$connected = $redis->connect($redisHost, $redisPort, 2);
-if (!$connected) {
-    throw new Exception("Falha ao conectar no Redis");
-}
-
 function getHealthStatusProcessor(string $processorName, string $url): array|bool {
     try {
         echo "Iniciando health check do $processorName...\n";
@@ -52,13 +43,18 @@ function getHealthStatusProcessor(string $processorName, string $url): array|boo
     }
 }
 
-function saveBestHostProcessor(int $bestHost) {
-    global $redis, $redisHost, $redisPort;
+function saveBestHostProcessor(Redis $redis, int $bestHost) {
     try {
         // Verifica se a conexão está ativa, senão reconecta
         if (!$redis->connected) {
-            $redis->connect($redisHost, $redisPort, 2);
+            $redisHost = getenv('REDIS_HOST') ?: 'redis';
+            $redisPort = getenv('REDIS_PORT') ?: 6379;
+            $connected = $redis->connect($redisHost, $redisPort, 2);
+            if (!$connected) {
+                throw new Exception("Falha ao conectar no Redis em saveBestHostProcessor");
+            }
         }
+
         $key = "best-host-processor";
         $redis->setex($key, 5, $bestHost); // TTL de 5 segundos
         echo "📝 Melhor host salvo: $bestHost\n";
@@ -86,6 +82,20 @@ function getBestHostProcessor(array $hosts): int|null {
 }
 
 Coroutine::create(function () {
+    // Conexão Redis criada uma vez e reutilizada
+    try {
+        $redis = new Redis();
+        $redisHost = getenv('REDIS_HOST') ?: 'redis';
+        $redisPort = getenv('REDIS_PORT') ?: 6379;
+        $connected = $redis->connect($redisHost, $redisPort, 2);
+        if (!$connected) {
+            throw new Exception("Falha ao conectar no Redis");
+        }
+    } catch (Exception $e) {
+        echo "💥 Erro ao conectar no Redis: " . $e->getMessage() . "\n";
+        return;
+    }
+
     while (true) {
         try {
             echo "\n🔄 Iniciando novo ciclo de health checks...\n";
@@ -128,8 +138,8 @@ Coroutine::create(function () {
 
             $bestHost = getBestHostProcessor($results);
 
-            if (!$bestHost) {
-                saveBestHostProcessor($bestHost);
+            if ($bestHost) {
+                saveBestHostProcessor($redis, $bestHost);
             }
 
             echo "Aguardando próximo ciclo...\n";
@@ -142,6 +152,5 @@ Coroutine::create(function () {
     }
 });
 
-// Manter o processo vivo
 echo "🚀 Worker de Health Check rodando...\n";
 Swoole\Event::wait();

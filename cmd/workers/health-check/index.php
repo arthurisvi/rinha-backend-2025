@@ -56,7 +56,7 @@ function saveBestHostProcessor(Redis $redis, int $bestHost) {
         }
 
         $key = "best-host-processor";
-        $redis->setex($key, 5, $bestHost); // TTL de 5 segundos
+        $redis->setex($key, 8, $bestHost); // TTL de 8 segundos
         echo "📝 Melhor host salvo: $bestHost\n";
     } catch (Exception $e) {
         echo "❌ Erro ao salvar status no Redis: " . $e->getMessage() . "\n";

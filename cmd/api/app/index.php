@@ -1,4 +1,5 @@
 <?php
+
 use Hyperf\Nano\Factory\AppFactory;
 use Psr\Http\Message\ServerRequestInterface;
 
@@ -6,6 +7,7 @@ use Hyperf\Redis\RedisFactory;
 use Hyperf\HttpMessage\Server\Response;
 
 use function Hyperf\Support\env;
+use function Hyperf\Coroutine\parallel;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
@@ -56,42 +58,52 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 
     echo "[DEBUG] Intervalo de busca: fromTimestamp = $fromTimestamp, toTimestamp = $toTimestamp\n";
 
-    $defaultResults = $redis->zRangeByScore('payments:default', $fromTimestamp, $toTimestamp);
-    echo "[DEBUG] payments:default - totalRequests = " . count($defaultResults) . ", valores = " . json_encode($defaultResults) . "\n";
-    $totalRequestsDefault = count($defaultResults);
-    $totalAmountDefault = array_sum(array_map(function($item) {
-        // Desserializa o valor
-        // TO DO: verificar pq está salvando no redis serializado
-        $value = @unserialize($item);
+    // Função para processar um processador específico
+    $processProcessor = function($processorName) use ($redis, $fromTimestamp, $toTimestamp) {
+        try {
+            $results = $redis->zRangeByScore("payments:{$processorName}", $fromTimestamp, $toTimestamp);
+            echo "[DEBUG] payments:{$processorName} - totalRequests = " . count($results) . ", valores = " . json_encode($results) . "\n";
 
-        if ($value === false) {
-            // fallback: se não conseguir desserializar, ignora ou trata como zero
-            return 0.0;
-        }
-        // Extrai o amount antes do ':'
-        return floatval(explode(':', $value)[0]);
-    }, $defaultResults));
+            $totalRequests = count($results);
+            $totalAmount = array_sum(array_map(function($item) {
+                // Desserializa o valor
+                // TO DO: verificar pq está salvando no redis serializado
+                $value = @unserialize($item);
 
-    $fallbackResults = $redis->zRangeByScore('payments:fallback', $fromTimestamp, $toTimestamp);
-    echo "[DEBUG] payments:fallback - totalRequests = " . count($fallbackResults) . ", valores = " . json_encode($fallbackResults) . "\n";
-    $totalRequestsFallback = count($fallbackResults);
-    $totalAmountFallback = array_sum(array_map(function($item) {
-        $value = @unserialize($item);
-        if ($value === false) {
-            return 0.0;
+                if ($value === false) {
+                    // fallback: se não conseguir desserializar, ignora ou trata como zero
+                    return 0.0;
+                }
+                // Extrai o amount antes do ':'
+                return floatval(explode(':', $value)[0]);
+            }, $results));
+
+            return [
+                'totalRequests' => $totalRequests,
+                'totalAmount' => $totalAmount,
+            ];
+        } catch (Exception $e) {
+            echo "[ERROR] Erro ao processar {$processorName}: " . $e->getMessage() . "\n";
+            return [
+                'totalRequests' => 0,
+                'totalAmount' => 0.0,
+            ];
         }
-        return floatval(explode(':', $value)[0]);
-    }, $fallbackResults));
+    };
+
+    // Executar consultas em paralelo usando Hyperf Parallel com chaves nomeadas
+    $parallelResults = parallel([
+        'default' => function() use ($processProcessor) {
+            return $processProcessor('default');
+        },
+        'fallback' => function() use ($processProcessor) {
+            return $processProcessor('fallback');
+        }
+    ]);
 
     $responsePayload = [
-        'default' => [
-            'totalRequests' => $totalRequestsDefault,
-            'totalAmount' => $totalAmountDefault,
-        ],
-        'fallback' => [
-            'totalRequests' => $totalRequestsFallback,
-            'totalAmount' => $totalAmountFallback,
-        ]
+        'default' => $parallelResults['default'],
+        'fallback' => $parallelResults['fallback']
     ];
 
     echo "[DEBUG] Resposta: " . json_encode($responsePayload) . "\n";

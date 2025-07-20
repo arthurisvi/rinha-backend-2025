@@ -68,7 +68,7 @@ class PaymentWorker {
 
         while ($this->running) {
             try {
-                $data = $redis->brPop(['payment_queue'], 5);
+                $data = $redis->brPop(['payment_queue'], 2);
 
                 if ($data) {
                     echo "✅ Worker {$workerId} consumiu: {$data[1]}\n";
@@ -97,7 +97,7 @@ class PaymentWorker {
                     echo "Payload: " . json_encode($data, JSON_PRETTY_PRINT) . "\n";
 
                     $httpClient = new Client($host, $port);
-                    $httpClient->set(['timeout' => 5]);
+                    $httpClient->set(['timeout' => 1.5]);
 
                     $httpClient->setHeaders([
                         'Content-Type' => 'application/json',
@@ -109,34 +109,50 @@ class PaymentWorker {
 
                     $httpClient->execute($uri);
 
-                    if ($httpClient->statusCode <= 0) {
-                        echo "❌ Worker {$workerId} - Erro na requisição:\n";
-                        echo "ErrCode: {$httpClient->errCode} - " . swoole_strerror($httpClient->errCode) . PHP_EOL;
+                    if ($httpClient->statusCode == 200) {
+                        $processor = $bestHost == 1 ? 'default' : 'fallback';
+                        $member = $payload['amount'] . ':' . $payload['correlationId'];
+                        $currentTime = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->getTimestamp();
+
+                        echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - currentTime: {$currentTime} - member: {$member}\n";
+                        $result = $redis->zAdd(
+                            "payments:{$processor}",
+                            $currentTime,
+                            $member
+                        );
+
+                        if ($result === 1) {
+                            echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
+                        } elseif ($result === 0) {
+                            echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";
+                        } else {
+                            echo "[ERRO] Falha ao persistir no Redis!\n";
+                        }
+
+                        echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
                     } else {
-                        echo "✅ Worker {$workerId} - Requisição bem-sucedida\n";
-                        echo "Status Code: " . $httpClient->statusCode . PHP_EOL;
-                        echo "Headers: " . print_r($httpClient->headers, true) . PHP_EOL;
-                        echo "Body: " . $httpClient->body . PHP_EOL;
+                        // ❌ FALHA - Reinfileirar com controle de tentativas
+                        $retryCount = $payload['retryCount'] ?? 0;
+                        $maxRetries = 2;
 
-                        if ($httpClient->statusCode == 200) {
-                            $processor = $bestHost == 1 ? 'default' : 'fallback';
-                            $member = $payload['amount'] . ':' . $payload['correlationId'];
-                            $currentTime = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->getTimestamp();
+                        if ($httpClient->statusCode <= 0) {
+                            echo "❌ Worker {$workerId} - Erro de conexão:\n";
+                            echo "ErrCode: {$httpClient->errCode} - " . swoole_strerror($httpClient->errCode) . PHP_EOL;
+                        } else {
+                            echo "❌ Worker {$workerId} - Status não-sucesso: {$httpClient->statusCode}\n";
+                        }
 
-                            echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - currentTime: {$currentTime} - member: {$member}\n";
-                            $result = $redis->zAdd(
-                                "payments:{$processor}",
-                                $currentTime,
-                                $member
-                            );
+                        if ($retryCount < $maxRetries) {
+                            // Incrementar contador de tentativas
+                            $payload['retryCount'] = $retryCount + 1;
 
-                            if ($result === 1) {
-                                echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
-                            } elseif ($result === 0) {
-                                echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";
-                            } else {
-                                echo "[ERRO] Falha ao persistir no Redis!\n";
-                            }
+                            // Reinfileirar para nova tentativa
+                            $requeue = $redis->lpush('payment_queue', json_encode($payload));
+                            echo "🔄 Worker {$workerId} - Pagamento reinfileirado (tentativa {$payload['retryCount']}/{$maxRetries}) - Queue result: {$requeue}\n";
+                        } else {
+                            // Máximo de tentativas atingido - apenas log
+                            echo "💀 Worker {$workerId} - Pagamento descartado após {$maxRetries} tentativas\n";
+                            $this->totalFailed++;
                         }
                     }
 

@@ -40,6 +40,68 @@ $app->config([
     ]
 ]);
 
+$app->get('/payments-summary', function (ServerRequestInterface $request) use ($app) {
+    $from = $request->getQueryParams()['from'] ?? null;
+    $to = $request->getQueryParams()['to'] ?? null;
+
+    echo "[DEBUG] Recebida requisição para /payments-summary\n";
+    echo "[DEBUG] Parâmetros recebidos: from = " . var_export($from, true) . ", to = " . var_export($to, true) . "\n";
+
+    /** @var \Hyperf\Redis\RedisProxy $redis */
+    $redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+
+    // Converte para string
+    $fromTimestamp = $from ? (string)(new DateTimeImmutable($from))->getTimestamp() : '-inf';
+    $toTimestamp = $to ? (string)(new DateTimeImmutable($to))->getTimestamp() : '+inf';
+
+    echo "[DEBUG] Intervalo de busca: fromTimestamp = $fromTimestamp, toTimestamp = $toTimestamp\n";
+
+    $defaultResults = $redis->zRangeByScore('payments:default', $fromTimestamp, $toTimestamp);
+    echo "[DEBUG] payments:default - totalRequests = " . count($defaultResults) . ", valores = " . json_encode($defaultResults) . "\n";
+    $totalRequestsDefault = count($defaultResults);
+    $totalAmountDefault = array_sum(array_map(function($item) {
+        // Desserializa o valor
+        // TO DO: verificar pq está salvando no redis serializado
+        $value = @unserialize($item);
+
+        if ($value === false) {
+            // fallback: se não conseguir desserializar, ignora ou trata como zero
+            return 0.0;
+        }
+        // Extrai o amount antes do ':'
+        return floatval(explode(':', $value)[0]);
+    }, $defaultResults));
+
+    $fallbackResults = $redis->zRangeByScore('payments:fallback', $fromTimestamp, $toTimestamp);
+    echo "[DEBUG] payments:fallback - totalRequests = " . count($fallbackResults) . ", valores = " . json_encode($fallbackResults) . "\n";
+    $totalRequestsFallback = count($fallbackResults);
+    $totalAmountFallback = array_sum(array_map(function($item) {
+        $value = @unserialize($item);
+        if ($value === false) {
+            return 0.0;
+        }
+        return floatval(explode(':', $value)[0]);
+    }, $fallbackResults));
+
+    $responsePayload = [
+        'default' => [
+            'totalRequests' => $totalRequestsDefault,
+            'totalAmount' => $totalAmountDefault,
+        ],
+        'fallback' => [
+            'totalRequests' => $totalRequestsFallback,
+            'totalAmount' => $totalAmountFallback,
+        ]
+    ];
+
+    echo "[DEBUG] Resposta: " . json_encode($responsePayload) . "\n";
+
+    return (new Response())
+        ->withStatus(200)
+        ->withHeader('Content-Type', 'application/json')
+        ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode($responsePayload)));
+});
+
 $app->post('/payments', function (ServerRequestInterface $request) use ($app) {
     $requestId = uniqid('req_');
     $startTime = microtime(true);

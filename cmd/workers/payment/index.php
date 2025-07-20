@@ -7,12 +7,14 @@ use Swoole\Coroutine;
 use Swoole\Runtime;
 use Swoole\Coroutine\Redis;
 use Swoole\Coroutine\Channel;
-
+use Swoole\Coroutine\Http\Client;
 Runtime::enableCoroutine();
 
 class PaymentWorker {
-    private string $defaultUrl;
-    private string $fallbackUrl;
+    private string $defaultHost;
+    private int $defaultPort;
+    private string $fallbackHost;
+    private int $fallbackPort;
     private int $maxConcurrentPayments;
     private Channel $resultChannel;
     private Channel $workerPool;
@@ -24,9 +26,11 @@ class PaymentWorker {
     private int $totalRequests = 0;
 
     public function __construct() {
-        $this->defaultUrl = getenv('PROCESSOR_DEFAULT_URL') ?: 'http://payment-processor-default:8080';
-        $this->fallbackUrl = getenv('PROCESSOR_FALLBACK_URL') ?: 'http://payment-processor-fallback:8080';
-        $this->maxConcurrentPayments = 3;
+        $this->defaultHost = getenv('PROCESSOR_DEFAULT_HOST') ?: 'payment-processor-default';
+        $this->defaultPort = getenv('PROCESSOR_DEFAULT_PORT') ?: 8080;
+        $this->fallbackHost = getenv('PROCESSOR_FALLBACK_HOST') ?: 'payment-processor-fallback';
+        $this->fallbackPort = getenv('PROCESSOR_FALLBACK_PORT') ?: 8080;
+        $this->maxConcurrentPayments = 50;
         $this->resultChannel = new Channel($this->maxConcurrentPayments);
         $this->workerPool = new Channel($this->maxConcurrentPayments);
     }
@@ -67,8 +71,75 @@ class PaymentWorker {
                 $data = $redis->brPop(['payment_queue'], 5);
 
                 if ($data) {
-                    $payload = $data[1]; // data[0] = nome da fila
-                    echo "✅ Worker {$workerId} consumiu: {$payload}\n";
+                    echo "✅ Worker {$workerId} consumiu: {$data[1]}\n";
+                    $payload = json_decode($data[1], true);
+                    $bestHost = $redis->get('best-host-processor') ?? 1;
+                    echo "✅ Worker {$workerId} obteve melhor host: {$bestHost}\n";
+
+                    $host = '';
+                    $port = '';
+                    $uri = '/payments';
+                    if ($bestHost == 1) {
+                        $host = $this->defaultHost;
+                        $port = $this->defaultPort;
+                    } else {
+                        $host = $this->fallbackHost;
+                        $port = $this->fallbackPort;
+                    }
+
+                    $currentTime = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c');
+
+                    $data = [
+                        'correlationId' => $payload['correlationId'],
+                        'amount' => (float) $payload['amount'],
+                        'requestedAt' => $currentTime,
+                    ];
+
+                    echo "🔎 Worker {$workerId} -Enviando requisição para {$host}:{$port}{$uri}\n";
+                    echo "Payload: " . json_encode($data, JSON_PRETTY_PRINT) . "\n";
+
+                    $httpClient = new Client($host, $port);
+                    $httpClient->set(['timeout' => 5]);
+
+                    $httpClient->setHeaders([
+                        'Content-Type' => 'application/json',
+                        'Accept' => 'application/json',
+                    ]);
+
+                    $httpClient->setMethod('POST');
+                    $httpClient->setData(json_encode($data));
+
+                    $httpClient->execute($uri);
+
+                    if ($httpClient->statusCode <= 0) {
+                        echo "❌ Worker {$workerId} - Erro na requisição:\n";
+                        echo "ErrCode: {$httpClient->errCode} - " . swoole_strerror($httpClient->errCode) . PHP_EOL;
+                    } else {
+                        echo "✅ Worker {$workerId} - Requisição bem-sucedida\n";
+                        echo "Status Code: " . $httpClient->statusCode . PHP_EOL;
+                        echo "Headers: " . print_r($httpClient->headers, true) . PHP_EOL;
+                        echo "Body: " . $httpClient->body . PHP_EOL;
+
+                        if ($httpClient->statusCode == 200) {
+                            $processor = $bestHost == 1 ? 'default' : 'fallback';
+                            $member = $payload['amount'] . ':' . $payload['correlationId'];
+                            $result = $redis->zAdd(
+                                "payments:{$processor}",
+                                $currentTime,
+                                $member
+                            );
+
+                            if ($result === 1) {
+                                echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
+                            } elseif ($result === 0) {
+                                echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";
+                            } else {
+                                echo "[ERRO] Falha ao persistir no Redis!\n";
+                            }
+                        }
+                    }
+
+                    $httpClient->close();
                 }
             } catch (Exception $e) {
                 echo "💥 Erro no worker {$workerId}: " . $e->getMessage() . "\n";

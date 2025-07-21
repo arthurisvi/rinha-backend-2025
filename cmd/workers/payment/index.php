@@ -132,7 +132,7 @@ class PaymentWorker {
                         }
 
                         echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
-                    } else {
+                    } elseif ($httpClient->statusCode != 422) {
                         // ❌ FALHA - Reinfileirar com controle de tentativas
                         $retryCount = $payload['retryCount'] ?? 0;
                         $maxRetries = 2;

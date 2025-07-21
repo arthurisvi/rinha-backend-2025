@@ -87,10 +87,13 @@ class PaymentWorker {
                         $port = $this->fallbackPort;
                     }
 
+                    $currentTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+                    $currentTimeTimestamp = $currentTime->getTimestamp();
+
                     $data = [
                         'correlationId' => $payload['correlationId'],
                         'amount' => (float) $payload['amount'],
-                        'requestedAt' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+                        'requestedAt' => $currentTime->format('c')
                     ];
 
                     echo "🔎 Worker {$workerId} -Enviando requisição para {$host}:{$port}{$uri}\n";
@@ -112,12 +115,11 @@ class PaymentWorker {
                     if ($httpClient->statusCode == 200) {
                         $processor = $bestHost == 1 ? 'default' : 'fallback';
                         $member = $payload['amount'] . ':' . $payload['correlationId'];
-                        $currentTime = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->getTimestamp();
 
-                        echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - currentTime: {$currentTime} - member: {$member}\n";
+                        echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - currentTime: {$currentTimeTimestamp} - member: {$member}\n";
                         $result = $redis->zAdd(
                             "payments:{$processor}",
-                            $currentTime,
+                            $currentTimeTimestamp,
                             $member
                         );
 

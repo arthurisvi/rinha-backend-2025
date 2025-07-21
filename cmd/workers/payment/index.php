@@ -120,7 +120,7 @@ class PaymentWorker {
                         $result = $redis->zAdd(
                             "payments:{$processor}",
                             $currentTimeTimestamp,
-                            $member
+                            (string) $member
                         );
 
                         if ($result === 1) {

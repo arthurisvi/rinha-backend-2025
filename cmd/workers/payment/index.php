@@ -125,13 +125,20 @@ class PaymentWorker {
 
                         if ($result === 1) {
                             echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
+                            // ✅ LIBERAR LOCK APÓS SUCESSO
+                            if (isset($payload['lockValue'])) {
+                                $lockKey = "payment_lock:{$payload['correlationId']}";
+                                if ($redis->get($lockKey) === $payload['lockValue']) {
+                                    $redis->del($lockKey);
+                                    echo "�� Worker {$workerId} - Lock liberado\n";
+                                }
+                            }
+                            echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
                         } elseif ($result === 0) {
                             echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";
                         } else {
                             echo "[ERRO] Falha ao persistir no Redis!\n";
                         }
-
-                        echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
                     } elseif ($httpClient->statusCode != 422) {
                         // ❌ FALHA - Reinfileirar com controle de tentativas
                         $retryCount = $payload['retryCount'] ?? 0;

@@ -133,6 +133,24 @@ class PaymentWorker {
                                     echo "�� Worker {$workerId} - Lock liberado\n";
                                 }
                             }
+                            // Verificação extra: consultar se existe no processor
+                            try {
+                                $processorHost = $host;
+                                $processorPort = $port;
+                                $checkClient = new Swoole\Coroutine\Http\Client($processorHost, $processorPort);
+                                $checkClient->set(['timeout' => 2]);
+                                $checkClient->get("/payments/{$payload['correlationId']}");
+                                if ($checkClient->statusCode !== 200) {
+                                    $missingKey = "payments:missing-in-processor";
+                                    $redis->sAdd($missingKey, $payload['correlationId']);
+                                    echo "[WORKER] Persistido no backend mas NAO existe no processor: {$payload['correlationId']} (host: {$processorHost})\n";
+                                } else {
+                                    echo "[DEBUG] Worker {$workerId} - Existe no processor e no Backend\n";
+                                }
+                                $checkClient->close();
+                            } catch (Exception $e) {
+                                echo "[WORKER] Erro ao verificar existencia no processor: {$payload['correlationId']} - " . $e->getMessage() . "\n";
+                            }
                             echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
                         } elseif ($result === 0) {
                             echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";

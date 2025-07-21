@@ -500,4 +500,17 @@ $app->get('/payments-diff', function (ServerRequestInterface $request) use ($app
         ])));
 });
 
+$app->get('/payments-missing-in-processor', function () use ($app) {
+    /** @var \Hyperf\Redis\RedisProxy $redis */
+    $redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+    $missing = $redis->sMembers('payments:missing-in-processor');
+    return (new Response())
+        ->withStatus(200)
+        ->withHeader('Content-Type', 'application/json')
+        ->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
+            'missing_in_processor' => $missing,
+            'total' => count($missing)
+        ])));
+});
+
 $app->run();

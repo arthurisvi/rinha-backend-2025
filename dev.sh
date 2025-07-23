@@ -4,7 +4,7 @@
 
 set -e
 
-DEV_COMPOSE="docker-compose -f docker-compose.dev.yml"
+DEV_COMPOSE="docker compose -f docker-compose.dev.yml"
 PROD_COMPOSE="docker-compose"
 
 show_help() {
@@ -33,7 +33,7 @@ show_help() {
 case "$1" in
     "up")
         echo "🚀 Iniciando ambiente de DESENVOLVIMENTO..."
-        $DEV_COMPOSE up --build
+        $DEV_COMPOSE up --build -d
         ;;
     "down")
         echo "🛑 Parando ambiente de desenvolvimento..."

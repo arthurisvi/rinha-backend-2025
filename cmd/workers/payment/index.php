@@ -1,214 +1,246 @@
 <?php
-error_reporting(E_ALL & ~E_WARNING);
+error_reporting(E_ALL & ~E_WARNING); // Mantém a supressão de warnings
 
 require_once __DIR__ . '/vendor/autoload.php';
 
 use Swoole\Coroutine;
 use Swoole\Runtime;
 use Swoole\Coroutine\Redis;
-use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Http\Client;
+
 Runtime::enableCoroutine();
 
-class PaymentWorker {
-    private string $defaultHost;
-    private int $defaultPort;
-    private string $fallbackHost;
-    private int $fallbackPort;
-    private int $maxConcurrentPayments;
-    private Channel $resultChannel;
-    private Channel $workerPool;
-    private bool $running = true;
-    private int $activeWorkers = 0;
-    private int $totalProcessed = 0;
-    private int $totalFailed = 0;
-    private float $totalDuration = 0;
-    private int $totalRequests = 0;
+class PaymentWorker
+{
+	private string $defaultHost;
+	private int $defaultPort;
+	private string $fallbackHost;
+	private int $fallbackPort;
+	private int $maxConcurrentPayments;
+	private bool $running = true;
+	private int $totalFailed = 0;
 
-    public function __construct() {
-        $this->defaultHost = getenv('PROCESSOR_DEFAULT_HOST') ?: 'payment-processor-default';
-        $this->defaultPort = getenv('PROCESSOR_DEFAULT_PORT') ?: 8080;
-        $this->fallbackHost = getenv('PROCESSOR_FALLBACK_HOST') ?: 'payment-processor-fallback';
-        $this->fallbackPort = getenv('PROCESSOR_FALLBACK_PORT') ?: 8080;
-        $this->maxConcurrentPayments = 20;
-        $this->resultChannel = new Channel($this->maxConcurrentPayments);
-        $this->workerPool = new Channel($this->maxConcurrentPayments);
-    }
+	public function __construct()
+	{
+		$this->defaultHost = getenv('PROCESSOR_DEFAULT_HOST') ?: 'payment-processor-default';
+		$this->defaultPort = (int) (getenv('PROCESSOR_DEFAULT_PORT') ?: 8080);
+		$this->fallbackHost = getenv('PROCESSOR_FALLBACK_HOST') ?: 'payment-processor-fallback';
+		$this->fallbackPort = (int) (getenv('PROCESSOR_FALLBACK_PORT') ?: 8080);
+		$this->maxConcurrentPayments = (int) (getenv('MAX_CONCURRENT_PAYMENTS') ?: 20);
+	}
 
-    public function start(): void {
-        echo "🚀 Payment Worker iniciado com {$this->maxConcurrentPayments} workers concorrentes\n";
+	public function start(): void
+	{
+		echo "🚀 Payment Worker iniciado com {$this->maxConcurrentPayments} workers concorrentes\n";
 
-        Coroutine::create(function () {
-            $this->runWorker();
-        });
+		Coroutine::create(function () {
+			$this->startPaymentWorkers();
+		});
 
-        Swoole\Event::wait();
-    }
+		Swoole\Event::wait();
+	}
 
-    private function runWorker(): void {
-        // ✅ INICIAR COMPONENTES
-        $this->startPaymentWorkers();
-    }
+	/**
+	 * Inicia o pool de corrotinas (workers) para processamento de pagamentos.
+	 */
+	private function startPaymentWorkers(): void
+	{
+		for ($i = 0; $i < $this->maxConcurrentPayments; $i++) {
+			Coroutine::create(function () use ($i) {
+				$this->paymentWorker($i);
+			});
+		}
+		echo "👥 {$this->maxConcurrentPayments} workers de pagamento iniciados\n";
+	}
 
-    private function startPaymentWorkers(): void {
-        // ✅ POOL DE WORKERS
-        for ($i = 0; $i < $this->maxConcurrentPayments; $i++) {
-            Coroutine::create(function () use ($i) {
-                $this->paymentWorker($i);
-            });
-        }
+	/**
+	 * Lógica principal de cada worker individual.
+	 * Consome da fila, processa o pagamento e gerencia retries.
+	 */
+	private function paymentWorker(int $workerId): void
+	{
+		$redis = $this->_connectRedis();
 
-        echo "👥 {$this->maxConcurrentPayments} workers de pagamento iniciados\n";
-    }
+		echo "🧵 Worker {$workerId} iniciado\n";
 
-    private function paymentWorker(int $workerId): void {
-        $redis = $this->connectRedis();
+		while ($this->running) {
+			try {
+				$data = $redis->brPop(['payment_queue'], 2);
 
-        echo "🧵 Worker {$workerId} iniciado\n";
+				if ($data) {
+					$payloadString = $data[1];
+					echo "✅ Worker {$workerId} consumiu: {$payloadString}\n";
+					$payload = json_decode($payloadString, true);
 
-        while ($this->running) {
-            try {
-                $data = $redis->brPop(['payment_queue'], 2);
+					if (json_last_error() !== JSON_ERROR_NONE) {
+						echo "[ERRO] Worker {$workerId} - Falha ao decodificar payload JSON: " . json_last_error_msg() . ". Payload: {$payloadString}\n";
+						$this->totalFailed++;
+						continue;
+					}
 
-                if ($data) {
-                    echo "✅ Worker {$workerId} consumiu: {$data[1]}\n";
-                    $payload = json_decode($data[1], true);
-                    $bestHost = $redis->get('best-host-processor') ?? 1;
-                    echo "✅ Worker {$workerId} obteve melhor host: {$bestHost}\n";
+					// Processa o pagamento e lida com o resultado
+					$this->_processPaymentRequest($workerId, $redis, $payload);
+				}
+			} catch (Exception $e) {
+				echo "💥 Erro no worker {$workerId}: " . $e->getMessage() . "\n";
+				$this->totalFailed++;
+				Coroutine::sleep(0.1);
+			}
+		}
+	}
 
-                    $host = '';
-                    $port = '';
-                    $uri = '/payments';
-                    if ($bestHost == 1) {
-                        $host = $this->defaultHost;
-                        $port = $this->defaultPort;
-                    } else {
-                        $host = $this->fallbackHost;
-                        $port = $this->fallbackPort;
-                    }
+	/**
+	 * Conecta a uma instância do Redis.
+	 * Cada corrotina deve ter sua própria conexão para evitar problemas de concorrência.
+	 */
+	private function _connectRedis(): Redis
+	{
+		$redis = new Redis();
+		$redisHost = getenv('REDIS_HOST') ?: 'redis';
+		$redisPort = (int) (getenv('REDIS_PORT') ?: 6379);
 
-                    $currentTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-                    $currentTimeTimestamp = $currentTime->getTimestamp();
+		// Tenta conectar, com timeout de 2 segundos
+		$connected = $redis->connect($redisHost, $redisPort, 2);
+		if (!$connected) {
+			throw new Exception("Falha ao conectar no Redis em {$redisHost}:{$redisPort}");
+		}
+		return $redis;
+	}
 
-                    $data = [
-                        'correlationId' => $payload['correlationId'],
-                        'amount' => (float) $payload['amount'],
-                        'requestedAt' => $currentTime->format('c')
-                    ];
+	/**
+	 * Envia a requisição de pagamento para o processador e gerencia a resposta.
+	 */
+	private function _processPaymentRequest(int $workerId, Redis $redis, array $payload): void
+	{
+		$bestHost = (int) ($redis->get('best-host-processor') ?? 1); // Padrão para 1 (default)
+		echo "✅ Worker {$workerId} obteve melhor host: {$bestHost}\n";
 
-                    echo "🔎 Worker {$workerId} -Enviando requisição para {$host}:{$port}{$uri}\n";
-                    echo "Payload: " . json_encode($data, JSON_PRETTY_PRINT) . "\n";
+		$host = ($bestHost === 1) ? $this->defaultHost : $this->fallbackHost;
+		$port = ($bestHost === 1) ? $this->defaultPort : $this->fallbackPort;
+		$uri = '/payments';
 
-                    $httpClient = new Client($host, $port);
-                    $httpClient->set(['timeout' => 1.5]);
+		$currentTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+		$dataToSend = [
+			'correlationId' => $payload['correlationId'],
+			'amount' => (float) $payload['amount'],
+			'requestedAt' => $currentTime->format('c') // Formato ISO 8601
+		];
 
-                    $httpClient->setHeaders([
-                        'Content-Type' => 'application/json',
-                        'Accept' => 'application/json',
-                    ]);
+		echo "🔎 Worker {$workerId} - Enviando requisição para {$host}:{$port}{$uri}\n";
+		echo "Payload: " . json_encode($dataToSend, JSON_PRETTY_PRINT) . "\n";
 
-                    $httpClient->setMethod('POST');
-                    $httpClient->setData(json_encode($data));
+		$httpClient = new Client($host, $port);
+		$httpClient->set(['timeout' => 1.5]);
+		$httpClient->setHeaders([
+			'Content-Type' => 'application/json',
+			'Accept' => 'application/json',
+		]);
+		$httpClient->setMethod('POST');
+		$httpClient->setData(json_encode($dataToSend));
 
-                    $httpClient->execute($uri);
+		try {
+			$httpClient->execute($uri);
 
-                    if ($httpClient->statusCode == 200) {
-                        $processor = $bestHost == 1 ? 'default' : 'fallback';
-                        $member = $payload['amount'] . ':' . $payload['correlationId'];
+			if ($httpClient->statusCode === 200) {
+				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $currentTime->getTimestamp());
+			} elseif ($httpClient->statusCode !== 422) { // 422 = DUPLICATED
+				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
+			} else {
+				echo "⚠️ Worker {$workerId} - Pagamento recusado (Status 422) para correlationId: {$payload['correlationId']}\n";
+			}
+		} catch (Exception $e) {
+			echo "❌ Worker {$workerId} - Exceção durante requisição HTTP para correlationId: {$payload['correlationId']}: " . $e->getMessage() . "\n";
+			$this->_handleFailedPayment($workerId, $redis, $payload, 0, $httpClient->errCode); // Status 0 para erro de conexão
+		} finally {
+			$httpClient->close();
+		}
+	}
 
-                        echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - currentTime: {$currentTimeTimestamp} - member: {$member}\n";
-                        $result = $redis->zAdd(
-                            "payments:{$processor}",
-                            $currentTimeTimestamp,
-                            (string) $member
-                        );
+	/**
+	 * Lida com o processamento bem-sucedido de um pagamento.
+	 */
+	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, int $timestamp): void
+	{
+		$processor = ($processorId === 1) ? 'default' : 'fallback';
+		$member = $payload['amount'] . ':' . $payload['correlationId'];
+		$key = "payments:{$processor}";
 
-                        if ($result === 1) {
-                            echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
-                            // ✅ LIBERAR LOCK APÓS SUCESSO
-                            if (isset($payload['lockValue'])) {
-                                $lockKey = "payment_lock:{$payload['correlationId']}";
-                                if ($redis->get($lockKey) === $payload['lockValue']) {
-                                    $redis->del($lockKey);
-                                    echo "�� Worker {$workerId} - Lock liberado\n";
-                                }
-                            }
-                            // Verificação extra: consultar se existe no processor
-                            try {
-                                $processorHost = $host;
-                                $processorPort = $port;
-                                $checkClient = new Swoole\Coroutine\Http\Client($processorHost, $processorPort);
-                                $checkClient->set(['timeout' => 2]);
-                                $checkClient->get("/payments/{$payload['correlationId']}");
-                                if ($checkClient->statusCode !== 200) {
-                                    $missingKey = "payments:missing-in-processor";
-                                    $redis->sAdd($missingKey, $payload['correlationId']);
-                                    echo "[WORKER] Persistido no backend mas NAO existe no processor: {$payload['correlationId']} (host: {$processorHost})\n";
-                                } else {
-                                    echo "[DEBUG] Worker {$workerId} - Existe no processor e no Backend\n";
-                                }
-                                $checkClient->close();
-                            } catch (Exception $e) {
-                                echo "[WORKER] Erro ao verificar existencia no processor: {$payload['correlationId']} - " . $e->getMessage() . "\n";
-                            }
-                            echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
-                        } elseif ($result === 0) {
-                            echo "[DEBUG] Elemento já existia no Redis (score/member iguais).\n";
-                        } else {
-                            echo "[ERRO] Falha ao persistir no Redis!\n";
-                        }
-                    } elseif ($httpClient->statusCode != 422) {
-                        // ❌ FALHA - Reinfileirar com controle de tentativas
-                        $retryCount = $payload['retryCount'] ?? 0;
-                        $maxRetries = 2;
+		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - timestamp: {$timestamp} - member: {$member}\n";
+		$result = $redis->zAdd($key, $timestamp, (string) $member);
 
-                        if ($httpClient->statusCode <= 0) {
-                            echo "❌ Worker {$workerId} - Erro de conexão:\n";
-                            echo "ErrCode: {$httpClient->errCode} - " . swoole_strerror($httpClient->errCode) . PHP_EOL;
-                        } else {
-                            echo "❌ Worker {$workerId} - Status não-sucesso: {$httpClient->statusCode}\n";
-                        }
+		if ($result === 1) {
+			echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
+			// Tenta liberar o lock se ele existia
+			if (isset($payload['lockValue'])) {
+				$lockKey = "payment_lock:{$payload['correlationId']}";
+				if ($redis->get($lockKey) === $payload['lockValue']) {
+					$redis->del($lockKey);
+					echo "🔓 Worker {$workerId} - Lock liberado para correlationId: {$payload['correlationId']}\n";
+				} else {
+					echo "[DEBUG] Worker {$workerId} - Lock para correlationId: {$payload['correlationId']} não encontrado ou valor mismatch.\n";
+				}
+			}
+			echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
+		} elseif ($result === 0) {
+			echo "[DEBUG] Elemento já existia no Redis (score/member iguais). Não persistido novamente.\n";
+		} else {
+			echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}!\n";
+			$this->totalFailed++;
+		}
+	}
 
-                        if ($retryCount < $maxRetries) {
-                            // Incrementar contador de tentativas
-                            $payload['retryCount'] = $retryCount + 1;
+	/**
+	 * Lida com o processamento falho de um pagamento, incluindo lógica de retry.
+	 */
+	private function _handleFailedPayment(int $workerId, Redis $redis, array $payload, int $statusCode, int $errCode): void
+	{
+		$correlationId = $payload['correlationId'] ?? 'N/A';
+		$retryCount = $payload['retryCount'] ?? 0;
+		$maxRetries = 2;
 
-                            // Reinfileirar para nova tentativa
-                            $requeue = $redis->lpush('payment_queue', json_encode($payload));
-                            echo "🔄 Worker {$workerId} - Pagamento reinfileirado (tentativa {$payload['retryCount']}/{$maxRetries}) - Queue result: {$requeue}\n";
-                        } else {
-                            // Máximo de tentativas atingido - apenas log
-                            echo "💀 Worker {$workerId} - Pagamento descartado após {$maxRetries} tentativas\n";
-                            $this->totalFailed++;
-                        }
-                    }
+		if ($statusCode <= 0) {
+			echo "❌ Worker {$workerId} - Erro de conexão para correlationId: {$correlationId}:\n";
+			echo "ErrCode: {$errCode} - " . swoole_strerror($errCode) . PHP_EOL;
+		} else {
+			echo "❌ Worker {$workerId} - Status não-sucesso para correlationId: {$correlationId}: {$statusCode}\n";
+		}
 
-                    $httpClient->close();
-                }
-            } catch (Exception $e) {
-                echo "💥 Erro no worker {$workerId}: " . $e->getMessage() . "\n";
-                $this->activeWorkers--;
-                $this->totalFailed++;
-                Coroutine::sleep(0.1);
-            }
-        }
-    }
+		if ($retryCount < $maxRetries) {
+			$payload['retryCount'] = $retryCount + 1;
+			$requeue = $redis->lpush('payment_queue', json_encode($payload));
+			echo "🔄 Worker {$workerId} - Pagamento para correlationId: {$correlationId} reinfileirado (tentativa {$payload['retryCount']}/{$maxRetries}) - Queue result: {$requeue}\n";
+		} else {
+			echo "💀 Worker {$workerId} - Pagamento para correlationId: {$correlationId} descartado após {$maxRetries} tentativas.\n";
+			$this->totalFailed++;
+		}
+	}
 
-    // ✅ CONEXÃO REDIS INDIVIDUAL
-    private function connectRedis(): Redis {
-        $redis = new Swoole\Coroutine\Redis();
-        $redisHost = getenv('REDIS_HOST') ?: 'redis';
-        $redisPort = getenv('REDIS_PORT') ?: 6379;
+	public function stop(): void
+	{
+		echo "🛑 Sinal de parada recebido. Encerrando workers...\n";
+		$this->running = false;
+	}
 
-        $connected = $redis->connect($redisHost, $redisPort, 2);
-        if (!$connected) {
-            throw new Exception("Falha ao conectar no Redis");
-        }
-
-        return $redis;
-    }
+	public function getTotalFailedPayments(): int
+	{
+		return $this->totalFailed;
+	}
 }
 
-// Iniciar worker
 $worker = new PaymentWorker();
-$worker->start();
+
+if (extension_loaded('swoole') && method_exists(Swoole\Process::class, 'signal')) {
+	Swoole\Process::signal(SIGTERM, function () use ($worker) {
+		$worker->stop();
+	});
+	Swoole\Process::signal(SIGINT, function () use ($worker) {
+		$worker->stop();
+	});
+}
+
+try {
+	$worker->start();
+} catch (Exception $e) {
+	echo "Erro Fatal na inicialização: " . $e->getMessage() . "\n";
+	exit(1);
+}

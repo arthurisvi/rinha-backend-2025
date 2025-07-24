@@ -42,6 +42,13 @@ $app->config([
 	]
 ]);
 
+$app->post('/purge-payments', function (ServerRequestInterface $request) use ($app) {
+	/** @var \Hyperf\Redis\RedisProxy $redis */
+	$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+
+	$redis->flushAll();
+});
+
 $app->get('/payments-summary', function (ServerRequestInterface $request) use ($app) {
 	$fromDate = $request->getQueryParams()['from'] ?? null;
 	$toDate = $request->getQueryParams()['to'] ?? null;

@@ -69,7 +69,6 @@ class PaymentWorker
 
 				if ($data) {
 					$payloadString = $data[1];
-					echo "✅ Worker {$workerId} consumiu: {$payloadString}\n";
 					$payload = json_decode($payloadString, true);
 
 					if (json_last_error() !== JSON_ERROR_NONE) {
@@ -113,7 +112,6 @@ class PaymentWorker
 	private function _processPaymentRequest(int $workerId, Redis $redis, array $payload): void
 	{
 		$bestHost = (int) ($redis->get('best-host-processor') ?? 1); // Padrão para 1 (default)
-		echo "✅ Worker {$workerId} obteve melhor host: {$bestHost}\n";
 
 		$host = ($bestHost === 1) ? $this->defaultHost : $this->fallbackHost;
 		$port = ($bestHost === 1) ? $this->defaultPort : $this->fallbackPort;
@@ -127,9 +125,6 @@ class PaymentWorker
 			'amount' => (float) $payload['amount'],
 			'requestedAt' => $requestedAtString
 		];
-
-		echo "🔎 Worker {$workerId} - Enviando requisição para {$host}:{$port}{$uri}\n";
-		echo "Payload: " . json_encode($dataToSend, JSON_PRETTY_PRINT) . "\n";
 
 		$httpClient = new Client($host, $port);
 		$httpClient->set(['timeout' => 1.5]);
@@ -167,26 +162,9 @@ class PaymentWorker
 		$member = $payload['amount'] . ':' . $payload['correlationId'];
 		$key = "payments:{$processor}";
 
-		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - timestamp: {$timestamp}\n";
-
 		$result = $redis->zAdd($key, $timestamp, (string) $member);
 
-		if ($result === 1) {
-			echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
-			// Tenta liberar o lock se ele existia
-			if (isset($payload['lockValue'])) {
-				$lockKey = "payment_lock:{$payload['correlationId']}";
-				if ($redis->get($lockKey) === $payload['lockValue']) {
-					$redis->del($lockKey);
-					echo "🔓 Worker {$workerId} - Lock liberado para correlationId: {$payload['correlationId']}\n";
-				} else {
-					echo "[DEBUG] Worker {$workerId} - Lock para correlationId: {$payload['correlationId']} não encontrado ou valor mismatch.\n";
-				}
-			}
-			echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
-		} elseif ($result === 0) {
-			echo "[DEBUG] Elemento já existia no Redis (score/member iguais). Não persistido novamente.\n";
-		} else {
+		if ($result != 1) {
 			echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}!\n";
 			$this->totalFailed++;
 		}
@@ -202,8 +180,8 @@ class PaymentWorker
 		$maxRetries = 2;
 
 		if ($statusCode <= 0) {
-			echo "❌ Worker {$workerId} - Erro de conexão para correlationId: {$correlationId}:\n";
-			echo "ErrCode: {$errCode} - " . swoole_strerror($errCode) . PHP_EOL;
+			echo "❌ Worker {$workerId} - Erro de conexão para correlationId: {$correlationId}:\n" . "ErrCode: {$errCode} - "
+				. swoole_strerror($errCode) . PHP_EOL;
 		} else {
 			echo "❌ Worker {$workerId} - Status não-sucesso para correlationId: {$correlationId}: {$statusCode}\n";
 		}
@@ -211,7 +189,6 @@ class PaymentWorker
 		if ($retryCount < $maxRetries) {
 			$payload['retryCount'] = $retryCount + 1;
 			$requeue = $redis->lpush('payment_queue', json_encode($payload));
-			echo "🔄 Worker {$workerId} - Pagamento para correlationId: {$correlationId} reinfileirado (tentativa {$payload['retryCount']}/{$maxRetries}) - Queue result: {$requeue}\n";
 		} else {
 			echo "💀 Worker {$workerId} - Pagamento para correlationId: {$correlationId} descartado após {$maxRetries} tentativas.\n";
 			$this->totalFailed++;

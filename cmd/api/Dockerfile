@@ -32,8 +32,6 @@ RUN { \
     echo "gc_probability=1"; \
     echo "gc_divisor=100"; \
     echo "session.auto_start=0"; \
-    echo "swoole.use_shortname=Off"; \
-    echo "swoole.unixsock_buffer_size=8192"; \
 } > /usr/local/etc/php/conf.d/optimized.ini
 
 # Limpeza agressiva

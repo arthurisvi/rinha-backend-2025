@@ -120,10 +120,11 @@ class PaymentWorker
 		$uri = '/payments';
 
 		$currentTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+		$requestedAt = $currentTime->format('c'); // Formato ISO 8601
 		$dataToSend = [
 			'correlationId' => $payload['correlationId'],
 			'amount' => (float) $payload['amount'],
-			'requestedAt' => $currentTime->format('c') // Formato ISO 8601
+			'requestedAt' => $requestedAt
 		];
 
 		echo "🔎 Worker {$workerId} - Enviando requisição para {$host}:{$port}{$uri}\n";
@@ -142,7 +143,7 @@ class PaymentWorker
 			$httpClient->execute($uri);
 
 			if ($httpClient->statusCode === 200) {
-				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $currentTime->getTimestamp());
+				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $requestedAt);
 			} elseif ($httpClient->statusCode !== 422) { // 422 = DUPLICATED
 				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
 			} else {
@@ -159,14 +160,20 @@ class PaymentWorker
 	/**
 	 * Lida com o processamento bem-sucedido de um pagamento.
 	 */
-	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, int $timestamp): void
+	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, string $requestedAt): void
 	{
 		$processor = ($processorId === 1) ? 'default' : 'fallback';
-		$member = $payload['amount'] . ':' . $payload['correlationId'];
-		$key = "payments:{$processor}";
+		$key = "payments:{$processor}:list";
 
-		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - timestamp: {$timestamp} - member: {$member}\n";
-		$result = $redis->zAdd($key, $timestamp, (string) $member);
+		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - requestedAt: {$requestedAt}\n";
+
+		$memberData = json_encode([
+			'correlationId' => $payload['correlationId'],
+			'amount' => (float) $payload['amount'],
+			'requestedAt' => $requestedAt
+		]);
+
+		$result = $redis->lPush($key, $memberData);
 
 		if ($result === 1) {
 			echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";

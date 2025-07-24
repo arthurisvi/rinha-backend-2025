@@ -119,12 +119,13 @@ class PaymentWorker
 		$port = ($bestHost === 1) ? $this->defaultPort : $this->fallbackPort;
 		$uri = '/payments';
 
-		$currentTime = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-		$requestedAt = $currentTime->format('c'); // Formato ISO 8601
+		$preciseTimestamp = microtime(true);
+		$date = DateTime::createFromFormat('U.u', sprintf('%.6f', (string) $preciseTimestamp));
+		$requestedAtString = $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z');
 		$dataToSend = [
 			'correlationId' => $payload['correlationId'],
 			'amount' => (float) $payload['amount'],
-			'requestedAt' => $requestedAt
+			'requestedAt' => $requestedAtString
 		];
 
 		echo "🔎 Worker {$workerId} - Enviando requisição para {$host}:{$port}{$uri}\n";
@@ -143,7 +144,7 @@ class PaymentWorker
 			$httpClient->execute($uri);
 
 			if ($httpClient->statusCode === 200) {
-				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $requestedAt);
+				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $preciseTimestamp);
 			} elseif ($httpClient->statusCode !== 422) { // 422 = DUPLICATED
 				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
 			} else {
@@ -160,24 +161,18 @@ class PaymentWorker
 	/**
 	 * Lida com o processamento bem-sucedido de um pagamento.
 	 */
-	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, string $requestedAt): void
+	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, string $timestamp): void
 	{
 		$processor = ($processorId === 1) ? 'default' : 'fallback';
-		$key = "payments:{$processor}:list";
+		$member = $payload['amount'] . ':' . $payload['correlationId'];
+		$key = "payments:{$processor}";
 
-		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - requestedAt: {$requestedAt}\n";
+		echo "🔎 Worker {$workerId} - Persistindo no Redis ({$processor}) - timestamp: {$timestamp}\n";
 
-		$memberData = json_encode([
-			'correlationId' => $payload['correlationId'],
-			'amount' => (float) $payload['amount'],
-			'requestedAt' => $requestedAt
-		]);
+		$result = $redis->zAdd($key, $timestamp, (string) $member);
 
-		$result = $redis->lPush($key, $memberData);
-
-		if ($result > 0) {
-			echo "[DEBUG] Persistido com sucesso no Redis (lista agora tem $result elementos).\n";
-
+		if ($result === 1) {
+			echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
 			// Tenta liberar o lock se ele existia
 			if (isset($payload['lockValue'])) {
 				$lockKey = "payment_lock:{$payload['correlationId']}";
@@ -188,8 +183,9 @@ class PaymentWorker
 					echo "[DEBUG] Worker {$workerId} - Lock para correlationId: {$payload['correlationId']} não encontrado ou valor mismatch.\n";
 				}
 			}
-
 			echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
+		} elseif ($result === 0) {
+			echo "[DEBUG] Elemento já existia no Redis (score/member iguais). Não persistido novamente.\n";
 		} else {
 			echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}!\n";
 			$this->totalFailed++;

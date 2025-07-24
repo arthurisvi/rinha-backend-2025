@@ -59,38 +59,48 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 	/** @var \Hyperf\Redis\RedisProxy $redis */
 	$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
 
-	echo "[DEBUG] Intervalo de busca: from = $fromDate, to = $toDate\n";
+	$toFloatTimestamp = function (?string $dateString): ?float {
+		if (!$dateString) {
+			return null;
+		}
 
-	// Função para processar um processador específico
-	$processProcessor = function ($processorName) use ($redis, $fromDate, $toDate) {
+		$date = DateTime::createFromFormat('Y-m-d\TH:i:s.u\Z', $dateString)
+			?: DateTime::createFromFormat('Y-m-d\TH:i:s\Z', $dateString);
+
+		if (!$date) {
+			return null;
+		}
+
+		return (float) $date->format('U.u');
+	};
+
+	$fromTs = (string) $toFloatTimestamp($fromDate) ?? '-inf';
+	$toTs = (string) $toFloatTimestamp($toDate) ?? '+inf';
+
+	echo "[DEBUG] Intervalo de busca (timestamp): from = $fromTs, to = $toTs\n";
+
+	$processProcessor = function ($processorName) use ($redis, $fromTs, $toTs) {
 		try {
-			$key = "payments:{$processorName}:list";
+			$results = $redis->zRangeByScore("payments:{$processorName}", $fromTs, $toTs);
+			echo "[DEBUG] payments:{$processorName} - totalRequests = " . count($results) . ", valores = " . json_encode($results) . "\n";
 
-			$items = $redis->lRange($key, 0, -1);
+			$totalRequests = count($results);
+			$totalAmount = array_sum(array_map(function ($item) {
+				// Desserializa o valor
+				// TO DO: verificar pq está salvando no redis serializado
+				$value = @unserialize($item);
 
-			$totalRequests = 0;
-			$totalAmount = 0.0;
-
-			foreach ($items as $jsonItem) {
-				$raw = @unserialize($jsonItem);
-				if (!is_string($raw)) {
-					$raw = $jsonItem;
+				if ($value === false) {
+					// fallback: se não conseguir desserializar, ignora ou trata como zero
+					return 0.0;
 				}
+				// Extrai o amount antes do ':'
+				return floatval(explode(':', $value)[0]);
+			}, $results));
 
-				$item = json_decode($raw, true);
-				if (!$item) continue;
-
-				$requestedAt = $item['requestedAt'] ?? null;
-				if ($requestedAt === null) continue;
-
-				if (($fromDate === null || $requestedAt >= $fromDate) && ($toDate === null || $requestedAt <= $toDate)) {
-					$totalRequests++;
-					$totalAmount += (float) ($item['amount'] ?? 0);
-				}
-			}
 			return [
 				'totalRequests' => $totalRequests,
-				'totalAmount' => $totalAmount,
+				'totalAmount' => round($totalAmount, 2)
 			];
 		} catch (Exception $e) {
 			echo "[ERROR] Erro ao processar {$processorName}: " . $e->getMessage() . "\n";
@@ -101,14 +111,9 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 		}
 	};
 
-	// Executar consultas em paralelo usando Hyperf Parallel com chaves nomeadas
 	$parallelResults = parallel([
-		'default' => function () use ($processProcessor) {
-			return $processProcessor('default');
-		},
-		'fallback' => function () use ($processProcessor) {
-			return $processProcessor('fallback');
-		}
+		'default' => fn() => $processProcessor('default'),
+		'fallback' => fn() => $processProcessor('fallback')
 	]);
 
 	$responsePayload = [
@@ -118,7 +123,7 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 
 	echo "[DEBUG] Resposta: " . json_encode($responsePayload) . "\n";
 
-	return (new Response())
+	return (new \Hyperf\HttpServer\Response())
 		->withStatus(200)
 		->withHeader('Content-Type', 'application/json')
 		->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode($responsePayload)));

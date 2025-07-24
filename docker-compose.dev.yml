@@ -20,7 +20,7 @@ x-api-template: &api-template
     resources:
       limits:
         cpus: "0.35"
-        memory: "80MB"
+        memory: "110MB"
 
 services:
   # Load Balancer - Nginx
@@ -74,7 +74,7 @@ services:
       resources:
         limits:
           cpus: "0.4"
-          memory: "70MB"
+          memory: "40MB"
 
   # Worker - Health Check
   worker_health:

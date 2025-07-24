@@ -20,7 +20,7 @@ x-api-template: &api-template
     resources:
       limits:
         cpus: "0.35"
-        memory: "110MB"
+        memory: "70MB"
 
 services:
   # Load Balancer - Nginx
@@ -74,7 +74,7 @@ services:
       resources:
         limits:
           cpus: "0.4"
-          memory: "40MB"
+          memory: "30MB"
 
   # Worker - Health Check
   worker_health:
@@ -99,7 +99,7 @@ services:
       resources:
         limits:
           cpus: "0.1"
-          memory: "30MB"
+          memory: "20MB"
 
   # Redis
   redis:
@@ -111,7 +111,7 @@ services:
       resources:
         limits:
           cpus: "0.2"
-          memory: "70MB"
+          memory: "40MB"
 
 networks:
   payment-processor:

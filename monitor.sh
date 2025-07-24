@@ -38,16 +38,16 @@ show_stats() {
                 limit="20MB"
                 ;;
             "api_1"|"api_2")
-                limit="80MB"
+                limit="70MB"
                 ;;
             "worker_payments")
-                limit="70MB"
+                limit="40MB"
                 ;;
             "worker_health")
-                limit="30MB"
+                limit="20MB"
                 ;;
             "redis")
-                limit="70MB"
+                limit="40MB"
                 ;;
             *)
                 limit="N/A"

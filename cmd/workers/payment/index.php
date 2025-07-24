@@ -175,8 +175,9 @@ class PaymentWorker
 
 		$result = $redis->lPush($key, $memberData);
 
-		if ($result === 1) {
-			echo "[DEBUG] Persistido com sucesso no Redis (novo elemento).\n";
+		if ($result > 0) {
+			echo "[DEBUG] Persistido com sucesso no Redis (lista agora tem $result elementos).\n";
+
 			// Tenta liberar o lock se ele existia
 			if (isset($payload['lockValue'])) {
 				$lockKey = "payment_lock:{$payload['correlationId']}";
@@ -187,9 +188,8 @@ class PaymentWorker
 					echo "[DEBUG] Worker {$workerId} - Lock para correlationId: {$payload['correlationId']} não encontrado ou valor mismatch.\n";
 				}
 			}
+
 			echo "✅ Worker {$workerId} - Pagamento processado com sucesso!\n";
-		} elseif ($result === 0) {
-			echo "[DEBUG] Elemento já existia no Redis (score/member iguais). Não persistido novamente.\n";
 		} else {
 			echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}!\n";
 			$this->totalFailed++;

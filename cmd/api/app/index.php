@@ -13,8 +13,6 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 $app = AppFactory::create('0.0.0.0', 8080);
 
-// https://medium.com/@anil.goyal0057/distributed-locking-mechanism-using-redis-26c17d9f3d5f
-
 $app->config([
 	'redis.default' => [
 		'host' => env('REDIS_HOST', 'localhost'),
@@ -47,10 +45,6 @@ $app->config([
 		//'max_request' => 20000,     // Respawn do worker só após X requests
 	],
 ]);
-
-$app->get('/', function () {
-	return 'API Hyperf rodando!';
-});
 
 $app->post('/purge-payments', function (ServerRequestInterface $request) use ($app) {
 	/** @var \Hyperf\Redis\RedisProxy $redis */
@@ -132,32 +126,17 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 });
 
 $app->post('/payments', function (ServerRequestInterface $request) use ($app) {
-	$requestId = uniqid('req_');
-
 	$body = $request->getParsedBody();
 	$correlationId = $body['correlationId'] ?? null;
 	$amount = $body['amount'] ?? null;
-
-	if (!$correlationId || !$amount) {
-		return (new Response())
-			->withStatus(400)
-			->withHeader('Content-Type', 'application/json')
-			->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
-				'error' => 'correlationId and amount are required',
-				'requestId' => $requestId
-			])));
-	}
 
 	try {
 		/** @var \Hyperf\Redis\RedisProxy $redis */
 		$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
 
-		// Enfileirar para processamento
 		$paymentData = [
 			'correlationId' => $correlationId,
-			'amount' => $amount,
-			'requestedAt' => date('c'),
-			'requestId' => $requestId
+			'amount' => $amount
 		];
 
 		$redis->lpush('payment_queue', json_encode($paymentData));
@@ -165,14 +144,14 @@ $app->post('/payments', function (ServerRequestInterface $request) use ($app) {
 		return (new Response())
 			->withStatus(202);
 	} catch (Exception $e) {
-		echo "💥 [{$requestId}] ERRO: " . $e->getMessage() . "\n";
-		echo "📚 [{$requestId}] Stack trace: " . $e->getTraceAsString() . "\n";
+		error_log("💥 [{$correlationId}] ERRO: " . $e->getMessage());
+		error_log("📚 [{$correlationId}] Stack trace: " . $e->getTraceAsString());
 		return (new Response())
 			->withStatus(500)
 			->withHeader('Content-Type', 'application/json')
 			->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode([
 				'error' => 'Internal server error',
-				'requestId' => $requestId
+				'requestId' => $correlationId
 			])));
 	}
 });

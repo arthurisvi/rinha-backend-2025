@@ -19,8 +19,8 @@ x-api-template: &api-template
   deploy:
     resources:
       limits:
-        cpus: "0.35"
-        memory: "70MB"
+        cpus: "0.3"
+        memory: "105MB"
 
 services:
   # Load Balancer - Nginx
@@ -39,16 +39,20 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.1"
-          memory: "20MB"
+          cpus: "0.2"
+          memory: "40MB"
 
   # API Instance 1
   api_1:
     <<: *api-template
+    ports:
+    - "8081:8080"
 
   # API Instance 2
   api_2:
     <<: *api-template
+    ports:
+    - "8082:8080"
 
   # Worker - Payment Processing
   worker_payments:
@@ -74,7 +78,7 @@ services:
       resources:
         limits:
           cpus: "0.4"
-          memory: "30MB"
+          memory: "40MB"
 
   # Worker - Health Check
   worker_health:
@@ -104,7 +108,7 @@ services:
   # Redis
   redis:
     image: redis:alpine
-    command: redis-server --appendonly yes --maxmemory 50mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly no --maxmemory 40mb --maxmemory-policy allkeys-lru
     networks:
       - rinha-network
     deploy:

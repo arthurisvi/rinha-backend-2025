@@ -119,7 +119,9 @@ class PaymentWorker
 
 		$preciseTimestamp = microtime(true);
 		$date = DateTime::createFromFormat('U.u', sprintf('%.6f', (string) $preciseTimestamp));
-		$requestedAtString = $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z');
+		$requestedAtString = $date
+			->setTimezone(new DateTimeZone('UTC'))
+			->format('Y-m-d\TH:i:s.u\Z');
 		$dataToSend = [
 			'correlationId' => $payload['correlationId'],
 			'amount' => (float) $payload['amount'],
@@ -140,10 +142,10 @@ class PaymentWorker
 
 			if ($httpClient->statusCode === 200) {
 				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $preciseTimestamp);
-			} elseif ($httpClient->statusCode !== 422) { // 422 = DUPLICATED
-				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
-			} else {
+			} elseif ($httpClient->statusCode == 422) {
 				echo "⚠️ Worker {$workerId} - Pagamento recusado (Status 422) para correlationId: {$payload['correlationId']}\n";
+			} else {
+				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
 			}
 		} catch (Exception $e) {
 			echo "❌ Worker {$workerId} - Exceção durante requisição HTTP para correlationId: {$payload['correlationId']}: " . $e->getMessage() . "\n";
@@ -188,6 +190,7 @@ class PaymentWorker
 
 		if ($retryCount < $maxRetries) {
 			$payload['retryCount'] = $retryCount + 1;
+			Coroutine::sleep(0.25);
 			$requeue = $redis->lpush('payment_queue', json_encode($payload));
 		} else {
 			echo "💀 Worker {$workerId} - Pagamento para correlationId: {$correlationId} descartado após {$maxRetries} tentativas.\n";

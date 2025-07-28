@@ -60,7 +60,7 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 	/** @var \Hyperf\Redis\RedisProxy $redis */
 	$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
 
-	$toFloatTimestamp = function (?string $dateString): ?float {
+	$toTimestampString = function (?string $dateString): ?string {
 		if (!$dateString) {
 			return null;
 		}
@@ -72,11 +72,11 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 			return null;
 		}
 
-		return (float) $date->format('U.u');
+		return $date->format('U.u');
 	};
 
-	$fromTs = (string) $toFloatTimestamp($fromDate) ?? '-inf';
-	$toTs = (string) $toFloatTimestamp($toDate) ?? '+inf';
+	$fromTs = $toTimestampString($fromDate) ?? '-inf';
+	$toTs = $toTimestampString($toDate) ?? '+inf';
 
 	$processProcessor = function ($processorName) use ($redis, $fromTs, $toTs) {
 		try {

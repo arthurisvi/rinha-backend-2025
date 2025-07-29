@@ -44,12 +44,12 @@ O sistema segue uma arquitetura distribuída com alta disponibilidade:
 
 | Serviço | CPU | Memória | Função |
 |---------|-----|---------|---------|
-| nginx | 0.1 | 20MB | Load Balancer |
-| api_1 | 0.35 | 80MB | REST API |
-| api_2 | 0.35 | 80MB | REST API |
-| worker_payments | 0.4 | 70MB | Processamento |
-| worker_health | 0.1 | 30MB | Health Check |
-| redis | 0.2 | 70MB | Cache/Queue |
+| nginx | 0.2 | 40MB | Load Balancer |
+| api_1 | 0.3 | 105MB | REST API |
+| api_2 | 0.3 | 105MB | REST API |
+| worker_payments | 0.4 | 40MB | Processamento |
+| worker_health | 0.1 | 20MB | Health Check |
+| redis | 0.2 | 40MB | Cache/Queue |
 
 **Total**: 1.5 CPU cores / 350MB RAM ✅
 
@@ -60,13 +60,10 @@ O sistema segue uma arquitetura distribuída com alta disponibilidade:
 - **Connection Pooling**: Reutilização de conexões Redis
 - **Load Balancing**: Distribuição inteligente de carga
 - **Worker Pool**: Múltiplos workers são utilizados para processar pagamentos em paralelo
-- **Controle de Backpressure**: Mecanismo que regula o ritmo de entrada de novas requisições na fila
 
 ### Resilência
 - **Health Check Automático**: Monitoramento contínuo dos processadores
 - **Fallback Inteligente**: Escolha automática do melhor processador
-- **Distributed Locking**: Prevenção de processamento duplicado
-- **Circuit Breaker**: Isolamento de falhas
 
 ### Escalabilidade
 - **Redis como Fila**: Processamento assíncrono

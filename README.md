@@ -16,16 +16,14 @@ Este projeto participa da **[Rinha de Backend 2025](https://github.com/zanfrance
 
 O sistema segue uma arquitetura distribuída com alta disponibilidade:
 
-![Diagrama de Arquitetura](rinha-backend-2025-arquitetura.png)
-
+<img width="1120" height="800" alt="image" src="https://github.com/user-attachments/assets/fc7dfea8-65cd-49fa-a944-c2b0d3c60c49" />
 
 ### 🔄 Fluxo de Processamento
-1. **Recebimento**: Nginx distribui requisições entre duas APIs
-2. **Validação**: API valida e cria lock no Redis para evitar duplicação
-3. **Enfileiramento**: Pagamento é enfileirado para processamento assíncrono
-4. **Health Check**: Worker monitora saúde dos processadores a cada 5s e escolhe o melhor processador disponível
-5. **Processamento**: Worker consome fila de pagamentos e realiza requisições para processadores de pagamento
-6. **Auditoria**: Sistema persiste pagamentos com sucesso para endpoint de resumo
+1. **Recebimento**: Load Balancer (Nginx) recebe e distribui requisições entre duas APIs (Round Robin)
+2. **Enfileiramento**: Pagamento é enfileirado para processamento assíncrono
+3. **Health Check**: Worker monitora saúde dos processadores a cada 5s e escolhe o melhor processador disponível
+4. **Processamento**: Worker consome fila de pagamentos e realiza requisições para processadores de pagamento
+5. **Auditoria**: Sistema persiste pagamentos com sucesso para endpoint de resumo
 
 ## 🛠️ Tecnologias
 

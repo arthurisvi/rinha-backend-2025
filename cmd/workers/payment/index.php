@@ -129,7 +129,7 @@ class PaymentWorker
 		];
 
 		$httpClient = new Client($host, $port);
-		$httpClient->set(['timeout' => 1.5]);
+		//$httpClient->set(['timeout' => 1.5]);
 		$httpClient->setHeaders([
 			'Content-Type' => 'application/json',
 			'Accept' => 'application/json',
@@ -143,13 +143,13 @@ class PaymentWorker
 			if ($httpClient->statusCode === 200) {
 				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $preciseTimestamp);
 			} elseif ($httpClient->statusCode == 422) {
-				echo "⚠️ Worker {$workerId} - Pagamento recusado (Status 422) para correlationId: {$payload['correlationId']}\n";
+				echo "⚠️ Worker {$workerId} - HOST {$bestHost} - Pagamento recusado (Status 422) para correlationId: {$payload['correlationId']}\n";
 			} else {
-				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode);
+				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode, $bestHost);
 			}
 		} catch (Exception $e) {
-			echo "❌ Worker {$workerId} - Exceção durante requisição HTTP para correlationId: {$payload['correlationId']}: " . $e->getMessage() . "\n";
-			$this->_handleFailedPayment($workerId, $redis, $payload, 0, $httpClient->errCode); // Status 0 para erro de conexão
+			echo "❌ Worker {$workerId} - HOST {$bestHost} - Exceção durante requisição HTTP para correlationId: {$payload['correlationId']}: " . $e->getMessage() . "\n";
+			$this->_handleFailedPayment($workerId, $redis, $payload, 0, $httpClient->errCode, $bestHost); // Status 0 para erro de conexão
 		} finally {
 			$httpClient->close();
 		}
@@ -175,17 +175,17 @@ class PaymentWorker
 	/**
 	 * Lida com o processamento falho de um pagamento, incluindo lógica de retry.
 	 */
-	private function _handleFailedPayment(int $workerId, Redis $redis, array $payload, int $statusCode, int $errCode): void
+	private function _handleFailedPayment(int $workerId, Redis $redis, array $payload, int $statusCode, int $errCode, int $bestHost): void
 	{
 		$correlationId = $payload['correlationId'] ?? 'N/A';
 		$retryCount = $payload['retryCount'] ?? 0;
 		$maxRetries = 2;
 
 		if ($statusCode <= 0) {
-			echo "❌ Worker {$workerId} - Erro de conexão para correlationId: {$correlationId}:\n" . "ErrCode: {$errCode} - "
+			echo "❌ Worker {$workerId} - HOST {$bestHost} - Erro de conexão para correlationId: {$correlationId}:\n" . "ErrCode: {$errCode} - "
 				. swoole_strerror($errCode) . PHP_EOL;
 		} else {
-			echo "❌ Worker {$workerId} - Status não-sucesso para correlationId: {$correlationId}: {$statusCode}\n";
+			echo "❌ Worker {$workerId} - HOST {$bestHost} - Status não-sucesso para correlationId: {$correlationId}: {$statusCode}\n";
 		}
 
 		if ($retryCount < $maxRetries) {

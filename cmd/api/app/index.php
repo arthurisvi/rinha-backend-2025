@@ -41,24 +41,22 @@ $app->config([
 	'server.settings' => [
 		'worker_num' => 1,
 		'enable_coroutine' => true,
+		'open_tcp_nodelay' => true,
 		'max_conn' => 1024,         // Aceita até 1024 conexões simultâneas
 		//'max_request' => 20000,     // Respawn do worker só após X requests
 	],
 ]);
 
-$app->post('/purge-payments', function (ServerRequestInterface $request) use ($app) {
-	/** @var \Hyperf\Redis\RedisProxy $redis */
-	$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+/** @var \Hyperf\Redis\RedisProxy $redis */
+$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
 
+$app->post('/purge-payments', function (ServerRequestInterface $request) use ($redis) {
 	$redis->flushAll();
 });
 
-$app->get('/payments-summary', function (ServerRequestInterface $request) use ($app) {
+$app->get('/payments-summary', function (ServerRequestInterface $request) use ($redis) {
 	$fromDate = $request->getQueryParams()['from'] ?? null;
 	$toDate = $request->getQueryParams()['to'] ?? null;
-
-	/** @var \Hyperf\Redis\RedisProxy $redis */
-	$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
 
 	$toTimestampString = function (?string $dateString): ?string {
 		if (!$dateString) {
@@ -125,24 +123,25 @@ $app->get('/payments-summary', function (ServerRequestInterface $request) use ($
 		->withBody(new \Hyperf\HttpMessage\Stream\SwooleStream(json_encode($responsePayload)));
 });
 
-$app->post('/payments', function (ServerRequestInterface $request) use ($app) {
-	$body = $request->getParsedBody();
-	$correlationId = $body['correlationId'] ?? null;
-	$amount = $body['amount'] ?? null;
+$app->post('/payments', function (ServerRequestInterface $request) use ($redis) {
+	gc_disable();
 
 	try {
-		/** @var \Hyperf\Redis\RedisProxy $redis */
-		$redis = $app->getContainer()->get(RedisFactory::class)->get('default');
+		$rawBody = (string) $request->getBody();
+		$idStartPos = 18;
+		$idEndPos = strpos($rawBody, '"', $idStartPos);
+		$correlationId = substr($rawBody, $idStartPos, $idEndPos - $idStartPos);
 
-		$paymentData = [
-			'correlationId' => $correlationId,
-			'amount' => $amount
-		];
+		$amountStartPos = strpos($rawBody, ':', $idEndPos) + 1;
+		$amount = substr($rawBody, $amountStartPos, -1);
 
-		$redis->lpush('payment_queue', json_encode($paymentData));
+		$payload = '{"correlationId":"' . $correlationId . '","amount":' . $amount . '}';
+		$redis->lpush('payment_queue', $payload);
 
 		return (new Response())
-			->withStatus(202);
+			->withStatus(202)
+			->withHeader('Content-Type', '-')
+			->withoutHeader('Content-Length');
 	} catch (Exception $e) {
 		error_log("💥 [{$correlationId}] ERRO: " . $e->getMessage());
 		error_log("📚 [{$correlationId}] Stack trace: " . $e->getTraceAsString());

@@ -1,9 +1,10 @@
-FROM php:8.1-cli-alpine
+FROM php:8.3-cli-alpine
 
 # Instalar dependências completas para compilação
 RUN apk add --no-cache --virtual .build-deps \
     build-base \
     autoconf \
+	brotli-dev \
     libtool \
     openssl-dev \
     pcre-dev \
@@ -15,9 +16,9 @@ RUN apk add --no-cache --virtual .build-deps \
 
 # Instalar extensões PHP mínimas
 RUN docker-php-ext-install pcntl sockets \
-    && pecl install redis-5.3.7 \
+    && pecl install redis \
     && docker-php-ext-enable redis \
-    && pecl install swoole-5.0.3 \
+    && pecl install swoole \
     && docker-php-ext-enable swoole
 
 # Configurações PHP para baixo consumo
@@ -28,6 +29,10 @@ RUN { \
     echo "opcache.max_accelerated_files=4000"; \
     echo "opcache.revalidate_freq=60"; \
     echo "opcache.fast_shutdown=1"; \
+    echo "opcache.enable_cli=1"; \
+    echo "opcache.interned_strings_buffer=8"; \
+	echo "opcache.jit_buffer_size=32M"; \
+	echo "opcache.jit=tracing"; \ 
     echo "zend.enable_gc=1"; \
     echo "gc_probability=1"; \
     echo "gc_divisor=100"; \

@@ -1,10 +1,10 @@
-FROM php:8.3-cli-alpine
+FROM php:8.4-cli-alpine AS builder
 
 # Instalar dependências completas para compilação
 RUN apk add --no-cache --virtual .build-deps \
     build-base \
     autoconf \
-	brotli-dev \
+    brotli-dev \
     libtool \
     openssl-dev \
     pcre-dev \
@@ -31,48 +31,24 @@ RUN { \
     echo "opcache.fast_shutdown=1"; \
     echo "opcache.enable_cli=1"; \
     echo "opcache.interned_strings_buffer=8"; \
-	echo "opcache.jit_buffer_size=32M"; \
-	echo "opcache.jit=tracing"; \ 
+    echo "opcache.jit_buffer_size=32M"; \
+    echo "opcache.jit=tracing"; \
     echo "zend.enable_gc=1"; \
     echo "gc_probability=1"; \
     echo "gc_divisor=100"; \
     echo "session.auto_start=0"; \
 } > /usr/local/etc/php/conf.d/optimized.ini
 
-# Limpeza agressiva
-RUN apk del .build-deps && \
-    rm -rf /var/cache/apk/* \
-           /tmp/pear \
-           /usr/local/lib/php/doc \
-           /usr/local/lib/php/test \
-           /usr/local/include/php \
-           /usr/local/php/man \
-           /usr/share/man
+# Limpeza
+RUN apk del .build-deps && rm -rf /var/cache/apk/* /tmp/pear
 
 # Criar usuário não-root primeiro
-RUN addgroup -g 1001 -S app && \
-    adduser -u 1001 -S app -G app
+RUN addgroup -g 1001 -S app && adduser -u 1001 -S app -G app
+USER app
 
 WORKDIR /opt/www
 
-# Instalar Composer
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-
-# Copiar apenas composer.json primeiro (para cache do Docker)
-COPY cmd/api/composer.json .
-RUN chown app:app composer.json
-
-# Instalar dependências (gera vendor/ e composer.lock no container)
-RUN composer install --no-dev --optimize-autoloader --no-interaction
-
-# Copiar todo o código da aplicação
-COPY cmd/api/app/ ./app/
-
-# Ajustar permissões finais
-RUN chown -R app:app /opt/www
-
-USER app
+COPY --chown=app:app cmd/api/server.php .
 
 EXPOSE 8080
-
-CMD ["php", "app/index.php", "start"]
+CMD ["php", "server.php"]

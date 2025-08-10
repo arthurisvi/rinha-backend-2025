@@ -141,15 +141,12 @@ class PaymentWorker
 			$httpClient->execute($uri);
 
 			if ($httpClient->statusCode === 200) {
-				$this->_handleSuccessfulPayment($workerId, $redis, $payload, $bestHost, $preciseTimestamp);
-			} elseif ($httpClient->statusCode == 422) {
-				echo "⚠️ Worker {$workerId} - HOST {$bestHost} - Pagamento recusado (Status 422) para correlationId: {$payload['correlationId']}\n";
-			} else {
-				$this->_handleFailedPayment($workerId, $redis, $payload, $httpClient->statusCode, $httpClient->errCode, $bestHost);
+				$this->_handleSuccessfulPayment($redis, $payload, $bestHost, $preciseTimestamp);
+			} elseif ($httpClient->statusCode != 422) {
+				$this->_handleFailedPayment($redis, $payload);
 			}
 		} catch (Exception $e) {
-			echo "❌ Worker {$workerId} - HOST {$bestHost} - Exceção durante requisição HTTP para correlationId: {$payload['correlationId']}: " . $e->getMessage() . "\n";
-			$this->_handleFailedPayment($workerId, $redis, $payload, 0, $httpClient->errCode, $bestHost); // Status 0 para erro de conexão
+			$this->_handleFailedPayment($redis, $payload);
 		} finally {
 			$httpClient->close();
 		}
@@ -158,7 +155,7 @@ class PaymentWorker
 	/**
 	 * Lida com o processamento bem-sucedido de um pagamento.
 	 */
-	private function _handleSuccessfulPayment(int $workerId, Redis $redis, array $payload, int $processorId, string $timestamp): void
+	private function _handleSuccessfulPayment(Redis $redis, array $payload, int $processorId, string $timestamp): void
 	{
 		$processor = ($processorId === 1) ? 'default' : 'fallback';
 		$member = $payload['amount'] . ':' . $payload['correlationId'];
@@ -175,27 +172,10 @@ class PaymentWorker
 	/**
 	 * Lida com o processamento falho de um pagamento, incluindo lógica de retry.
 	 */
-	private function _handleFailedPayment(int $workerId, Redis $redis, array $payload, int $statusCode, int $errCode, int $bestHost): void
+	private function _handleFailedPayment(Redis $redis, array $payload): void
 	{
-		$correlationId = $payload['correlationId'] ?? 'N/A';
-		$retryCount = $payload['retryCount'] ?? 0;
-		$maxRetries = 2;
-
-		if ($statusCode <= 0) {
-			echo "❌ Worker {$workerId} - HOST {$bestHost} - Erro de conexão para correlationId: {$correlationId}:\n" . "ErrCode: {$errCode} - "
-				. swoole_strerror($errCode) . PHP_EOL;
-		} else {
-			echo "❌ Worker {$workerId} - HOST {$bestHost} - Status não-sucesso para correlationId: {$correlationId}: {$statusCode}\n";
-		}
-
-		if ($retryCount < $maxRetries) {
-			$payload['retryCount'] = $retryCount + 1;
-			Coroutine::sleep(0.25);
-			$requeue = $redis->lpush('payment_queue', json_encode($payload));
-		} else {
-			echo "💀 Worker {$workerId} - Pagamento para correlationId: {$correlationId} descartado após {$maxRetries} tentativas.\n";
-			$this->totalFailed++;
-		}
+		Coroutine::sleep(0.1);
+		$redis->lpush('payment_queue', json_encode($payload));
 	}
 
 	public function stop(): void

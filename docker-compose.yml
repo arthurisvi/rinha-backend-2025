@@ -48,7 +48,7 @@ services:
 
   # Worker - Payment Processing
   worker_payments:
-    image: arthurisvi/worker-payments-rinha-backend:1.2
+    image: arthurisvi/worker-payments-rinha-backend:1.2.1
     environment:
       - APP_ENV=production
       - REDIS_HOST=redis

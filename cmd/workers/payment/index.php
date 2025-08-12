@@ -1,14 +1,101 @@
 <?php
-error_reporting(E_ALL & ~E_WARNING); // Mantém a supressão de warnings
-
-require_once __DIR__ . '/vendor/autoload.php';
+error_reporting(E_ALL & ~E_WARNING);
 
 use Swoole\Coroutine;
-use Swoole\Runtime;
+use Swoole\Coroutine\Channel;
 use Swoole\Coroutine\Redis;
 use Swoole\Coroutine\Http\Client;
 
-Runtime::enableCoroutine();
+class RedisPool
+{
+	private Channel $pool;
+	private string $host;
+	private int $port;
+	private int $size;
+
+	public function __construct(string $host, int $port, int $size = 5)
+	{
+		$this->host = $host;
+		$this->port = $port;
+		$this->size = $size;
+		$this->pool = new Channel($size);
+	}
+
+	public function init()
+	{
+		for ($i = 0; $i < $this->size; $i++) {
+			$conn = $this->createConnection();
+			if ($conn) {
+				$this->pool->push($conn);
+			}
+		}
+	}
+
+	private function createConnection(): ?Redis
+	{
+		$redis = new Redis();
+		if (!$redis->connect($this->host, $this->port, 2)) {
+			return null;
+		}
+		return $redis;
+	}
+
+	public function get(): ?Redis
+	{
+		return $this->pool->pop(0.5);
+	}
+
+	public function put(Redis $redis): void
+	{
+		$this->pool->push($redis);
+	}
+}
+
+class HttpClientPool
+{
+	private Channel $pool;
+	private string $host;
+	private int $port;
+	private int $size;
+
+	public function __construct(string $host, int $port, int $size = 20)
+	{
+		$this->host = $host;
+		$this->port = $port;
+		$this->size = $size;
+		$this->pool = new Channel($size);
+	}
+
+	public function init()
+	{
+		for ($i = 0; $i < $this->size; $i++) {
+			$client = $this->createClient();
+			if ($client) {
+				$this->pool->push($client);
+			}
+		}
+	}
+
+	private function createClient(): ?Client
+	{
+		$client = new Client($this->host, $this->port);
+		$client->setHeaders([
+			'Content-Type' => 'application/json',
+			'Accept' => 'application/json',
+		]);
+		return $client;
+	}
+
+	public function get(): ?Client
+	{
+		return $this->pool->pop(1.0);
+	}
+
+	public function put(Client $client): void
+	{
+		$this->pool->push($client);
+	}
+}
 
 class PaymentWorker
 {
@@ -20,162 +107,137 @@ class PaymentWorker
 	private bool $running = true;
 	private int $totalFailed = 0;
 
+	private RedisPool $redisPool;
+	private HttpClientPool $defaultHttpPool;
+	private HttpClientPool $fallbackHttpPool;
+
 	public function __construct()
 	{
 		$this->defaultHost = getenv('PROCESSOR_DEFAULT_HOST') ?: 'payment-processor-default';
-		$this->defaultPort = (int) (getenv('PROCESSOR_DEFAULT_PORT') ?: 8080);
+		$this->defaultPort = (int)(getenv('PROCESSOR_DEFAULT_PORT') ?: 8080);
 		$this->fallbackHost = getenv('PROCESSOR_FALLBACK_HOST') ?: 'payment-processor-fallback';
-		$this->fallbackPort = (int) (getenv('PROCESSOR_FALLBACK_PORT') ?: 8080);
-		$this->maxConcurrentPayments = (int) (getenv('MAX_CONCURRENT_PAYMENTS') ?: 20);
+		$this->fallbackPort = (int)(getenv('PROCESSOR_FALLBACK_PORT') ?: 8080);
+		$this->maxConcurrentPayments = (int)(getenv('MAX_CONCURRENT_PAYMENTS') ?: 20);
+
+		$redisHost = getenv('REDIS_HOST') ?: 'redis';
+		$redisPort = (int)(getenv('REDIS_PORT') ?: 6379);
+
+		$this->redisPool = new RedisPool($redisHost, $redisPort, $this->maxConcurrentPayments);
+		$this->defaultHttpPool = new HttpClientPool($this->defaultHost, $this->defaultPort, $this->maxConcurrentPayments);
+		$this->fallbackHttpPool = new HttpClientPool($this->fallbackHost, $this->fallbackPort, $this->maxConcurrentPayments);
 	}
 
 	public function start(): void
 	{
-		echo "🚀 Payment Worker iniciado com {$this->maxConcurrentPayments} workers concorrentes\n";
+		echo "🚀 Payment Worker iniciado com {$this->maxConcurrentPayments} corrotinas concorrentes\n";
 
 		Coroutine::create(function () {
-			$this->startPaymentWorkers();
+			$this->redisPool->init();
+			$this->defaultHttpPool->init();
+			$this->fallbackHttpPool->init();
+
+			for ($i = 0; $i < $this->maxConcurrentPayments; $i++) {
+				Coroutine::create(function () {
+					while ($this->running) {
+						$this->processPayment();
+					}
+				});
+			}
 		});
 
 		Swoole\Event::wait();
 	}
 
-	/**
-	 * Inicia o pool de corrotinas (workers) para processamento de pagamentos.
-	 */
-	private function startPaymentWorkers(): void
+	private function processPayment(): void
 	{
-		for ($i = 0; $i < $this->maxConcurrentPayments; $i++) {
-			Coroutine::create(function () use ($i) {
-				$this->paymentWorker($i);
-			});
+		$redis = $this->redisPool->get();
+		if (!$redis) {
+			echo "[ERRO] Não conseguiu obter conexão Redis\n";
+			return;
 		}
-		echo "👥 {$this->maxConcurrentPayments} workers de pagamento iniciados\n";
-	}
 
-	/**
-	 * Lógica principal de cada worker individual.
-	 * Consome da fila, processa o pagamento e gerencia retries.
-	 */
-	private function paymentWorker(int $workerId): void
-	{
-		$redis = $this->_connectRedis();
+		$data = $redis->brPop(['payment_queue'], 2);
+		$this->redisPool->put($redis);
 
-		echo "🧵 Worker {$workerId} iniciado\n";
-
-		while ($this->running) {
-			try {
-				$data = $redis->brPop(['payment_queue'], 2);
-
-				if ($data) {
-					$payloadString = $data[1];
-					$payload = json_decode($payloadString, true);
-
-					if (json_last_error() !== JSON_ERROR_NONE) {
-						echo "[ERRO] Worker {$workerId} - Falha ao decodificar payload JSON: " . json_last_error_msg() . ". Payload: {$payloadString}\n";
-						$this->totalFailed++;
-						continue;
-					}
-
-					// Processa o pagamento e lida com o resultado
-					$this->_processPaymentRequest($workerId, $redis, $payload);
-				}
-			} catch (Exception $e) {
-				echo "💥 Erro no worker {$workerId}: " . $e->getMessage() . "\n";
-				$this->totalFailed++;
-				Coroutine::sleep(0.1);
-			}
+		if (!$data) {
+			return;
 		}
-	}
 
-	/**
-	 * Conecta a uma instância do Redis.
-	 * Cada corrotina deve ter sua própria conexão para evitar problemas de concorrência.
-	 */
-	private function _connectRedis(): Redis
-	{
-		$redis = new Redis();
-		$redisHost = getenv('REDIS_HOST') ?: 'redis';
-		$redisPort = (int) (getenv('REDIS_PORT') ?: 6379);
-
-		// Tenta conectar, com timeout de 2 segundos
-		$connected = $redis->connect($redisHost, $redisPort, 2);
-		if (!$connected) {
-			throw new Exception("Falha ao conectar no Redis em {$redisHost}:{$redisPort}");
+		$payloadString = $data[1];
+		$payload = json_decode($payloadString, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			echo "[ERRO] Falha ao decodificar JSON: " . json_last_error_msg() . "\n";
+			$this->totalFailed++;
+			return;
 		}
-		return $redis;
-	}
 
-	/**
-	 * Envia a requisição de pagamento para o processador e gerencia a resposta.
-	 */
-	private function _processPaymentRequest(int $workerId, Redis $redis, array $payload): void
-	{
-		$bestHost = (int) ($redis->get('best-host-processor') ?? 1); // Padrão para 1 (default)
+		$redisForHost = $this->redisPool->get();
+		$bestHost = (int)($redisForHost->get('best-host-processor') ?? 1);
+		$this->redisPool->put($redisForHost);
 
-		$host = ($bestHost === 1) ? $this->defaultHost : $this->fallbackHost;
-		$port = ($bestHost === 1) ? $this->defaultPort : $this->fallbackPort;
-		$uri = '/payments';
+		$httpPool = $bestHost === 1 ? $this->defaultHttpPool : $this->fallbackHttpPool;
+
+		$client = $httpPool->get();
+		if (!$client) {
+			echo "[ERRO] Não conseguiu obter cliente HTTP\n";
+			$this->totalFailed++;
+			return;
+		}
 
 		$preciseTimestamp = microtime(true);
-		$date = DateTime::createFromFormat('U.u', sprintf('%.6f', (string) $preciseTimestamp));
-		$requestedAtString = $date
-			->setTimezone(new DateTimeZone('UTC'))
-			->format('Y-m-d\TH:i:s.u\Z');
+		$date = DateTime::createFromFormat('U.u', sprintf('%.6f', $preciseTimestamp));
+		$requestedAtString = $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.u\Z');
+
 		$dataToSend = [
 			'correlationId' => $payload['correlationId'],
 			'amount' => (float) $payload['amount'],
-			'requestedAt' => $requestedAtString
+			'requestedAt' => $requestedAtString,
 		];
 
-		$httpClient = new Client($host, $port);
-		//$httpClient->set(['timeout' => 1.5]);
-		$httpClient->setHeaders([
-			'Content-Type' => 'application/json',
-			'Accept' => 'application/json',
-		]);
-		$httpClient->setMethod('POST');
-		$httpClient->setData(json_encode($dataToSend));
+		$client->setMethod('POST');
+		$client->setData(json_encode($dataToSend));
 
 		try {
-			$httpClient->execute($uri);
+			$client->execute('/payments');
 
-			if ($httpClient->statusCode === 200) {
-				$this->_handleSuccessfulPayment($redis, $payload, $bestHost, $preciseTimestamp);
-			} elseif ($httpClient->statusCode != 422) {
-				$this->_handleFailedPayment($redis, $payload);
+			if ($client->statusCode === 200) {
+				$this->handleSuccessfulPayment($payload, $bestHost, $preciseTimestamp);
+			} elseif ($client->statusCode != 422) {
+				$this->handleFailedPayment($payload);
 			}
-		} catch (Exception $e) {
-			$this->_handleFailedPayment($redis, $payload);
+		} catch (Throwable $e) {
+			$this->handleFailedPayment($payload);
 		} finally {
-			$httpClient->close();
+			$httpPool->put($client);
 		}
 	}
 
-	/**
-	 * Lida com o processamento bem-sucedido de um pagamento.
-	 */
-	private function _handleSuccessfulPayment(Redis $redis, array $payload, int $processorId, string $timestamp): void
+	private function handleSuccessfulPayment(array $payload, int $processorId, float $timestamp): void
 	{
-		$processor = ($processorId === 1) ? 'default' : 'fallback';
+		$processor = $processorId === 1 ? 'default' : 'fallback';
 		$member = $payload['amount'] . ':' . $payload['correlationId'];
 		$key = "payments:{$processor}";
 
-		$result = $redis->zAdd($key, $timestamp, (string) $member);
-
-		if ($result != 1) {
-			echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}!\n";
-			$this->totalFailed++;
+		$redis = $this->redisPool->get();
+		if ($redis) {
+			$result = $redis->zAdd($key, $timestamp, (string)$member);
+			if ($result != 1) {
+				echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}\n";
+				$this->totalFailed++;
+			}
+			$this->redisPool->put($redis);
 		}
 	}
 
-	/**
-	 * Lida com o processamento falho de um pagamento, incluindo lógica de retry.
-	 */
-	private function _handleFailedPayment(Redis $redis, array $payload): void
+	private function handleFailedPayment(array $payload): void
 	{
 		Coroutine::sleep(0.1);
-		$redis->lpush('payment_queue', json_encode($payload));
+
+		$redis = $this->redisPool->get();
+		if ($redis) {
+			$redis->lPush('payment_queue', json_encode($payload));
+			$this->redisPool->put($redis);
+		}
 	}
 
 	public function stop(): void
@@ -190,20 +252,17 @@ class PaymentWorker
 	}
 }
 
-$worker = new PaymentWorker();
-
 if (extension_loaded('swoole') && method_exists(Swoole\Process::class, 'signal')) {
+	$worker = new PaymentWorker();
+
 	Swoole\Process::signal(SIGTERM, function () use ($worker) {
 		$worker->stop();
 	});
 	Swoole\Process::signal(SIGINT, function () use ($worker) {
 		$worker->stop();
 	});
-}
 
-try {
 	$worker->start();
-} catch (Exception $e) {
-	echo "Erro Fatal na inicialização: " . $e->getMessage() . "\n";
-	exit(1);
+} else {
+	echo "Swoole extension not loaded or signals not supported.\n";
 }

@@ -17,10 +17,10 @@ x-api-template: &api-template
     - rinha-network
     - payment-processor
   deploy:
-    resources:
-      limits:
-        cpus: "0.3"
-        memory: "105MB"
+   resources:
+    limits:
+     cpus: "0.25"
+     memory: "80MB"
 
 services:
   # Load Balancer - Nginx
@@ -108,14 +108,14 @@ services:
   # Redis
   redis:
     image: redis:alpine
-    command: redis-server --appendonly no --maxmemory 40mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly no --maxmemory 90mb --maxmemory-policy allkeys-lru
     networks:
       - rinha-network
     deploy:
       resources:
         limits:
-          cpus: "0.2"
-          memory: "40MB"
+          cpus: "0.3"
+          memory: "90MB"
 
 networks:
   payment-processor:

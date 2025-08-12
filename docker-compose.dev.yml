@@ -1,5 +1,4 @@
 version: '3.8'
-
 # Template base para as APIs em desenvolvimento
 x-api-template: &api-template
   build:
@@ -20,7 +19,7 @@ x-api-template: &api-template
     resources:
       limits:
         cpus: "0.3"
-        memory: "105MB"
+        memory: "80MB"
 
 services:
   # Load Balancer - Nginx
@@ -52,15 +51,14 @@ services:
   api_2:
     <<: *api-template
     ports:
-    - "8082:8080"
+    - "8082:8080" 
 
-  # Worker - Payment Processing
+ # Worker - Payment Processing
   worker_payments:
     build:
       context: .
       dockerfile: cmd/workers/payment/Dockerfile
     volumes:
-      # Monta apenas o arquivo PHP principal
       - ./cmd/workers/payment/index.php:/opt/www/index.php:rw
     environment:
       - APP_ENV=development
@@ -78,44 +76,19 @@ services:
       resources:
         limits:
           cpus: "0.4"
-          memory: "40MB"
-
-  # Worker - Health Check
-  worker_health:
-    build:
-      context: .
-      dockerfile: cmd/workers/health-check/Dockerfile
-    volumes:
-      # Monta apenas o arquivo PHP principal
-      - ./cmd/workers/health-check/index.php:/opt/www/index.php:rw
-    environment:
-      - APP_ENV=development
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
-      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
-    depends_on:
-      - redis
-    networks:
-      - rinha-network
-      - payment-processor
-    deploy:
-      resources:
-        limits:
-          cpus: "0.1"
-          memory: "20MB"
+          memory: "50MB"
 
   # Redis
   redis:
     image: redis:alpine
-    command: redis-server --appendonly no --maxmemory 40mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly no --maxmemory 80mb --maxmemory-policy allkeys-lru
     networks:
       - rinha-network
     deploy:
       resources:
         limits:
-          cpus: "0.2"
-          memory: "40MB"
+          cpus: "0.3"
+          memory: "100MB"
 
 networks:
   payment-processor:

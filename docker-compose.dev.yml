@@ -34,7 +34,6 @@ services:
       - api_2
     networks:
       - rinha-network
-      - payment-processor
     deploy:
       resources:
         limits:

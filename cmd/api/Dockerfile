@@ -33,7 +33,7 @@ RUN { \
     echo "opcache.interned_strings_buffer=8"; \
     echo "opcache.jit_buffer_size=32M"; \
     echo "opcache.jit=tracing"; \
-    echo "zend.enable_gc=1"; \
+    echo "zend.enable_gc=0"; \
     echo "gc_probability=1"; \
     echo "gc_divisor=100"; \
     echo "session.auto_start=0"; \

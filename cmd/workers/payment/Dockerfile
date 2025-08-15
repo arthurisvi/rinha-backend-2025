@@ -29,7 +29,7 @@ RUN { \
     echo "opcache.max_accelerated_files=2000"; \
     echo "opcache.revalidate_freq=120"; \
     echo "opcache.fast_shutdown=1"; \
-    echo "zend.enable_gc=1"; \
+    echo "zend.enable_gc=0"; \
     echo "gc_probability=1"; \
     echo "gc_divisor=50"; \
     echo "session.auto_start=0"; \

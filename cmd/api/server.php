@@ -6,8 +6,6 @@ use Swoole\Http\Response;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Channel;
 
-gc_disable();
-
 class RedisConnectionPool
 {
 	private Channel $pool;

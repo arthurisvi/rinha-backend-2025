@@ -82,16 +82,13 @@ show_service_section() {
                     limit_mb=40
                     ;;
                 "api_1"|"api_2")
-                    limit_mb=105
+                    limit_mb=80
                     ;;
                 "worker_payments")
-                    limit_mb=40
-                    ;;
-                "worker_health")
-                    limit_mb=20
+                    limit_mb=50
                     ;;
                 "redis")
-                    limit_mb=40
+                    limit_mb=100
                     ;;
                 *)
                     limit_mb=0

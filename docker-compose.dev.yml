@@ -81,7 +81,12 @@ services:
   # Redis
   redis:
     image: redis:alpine
-    command: redis-server --appendonly no --maxmemory 100mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --loglevel warning
+      --logfile /dev/null
     networks:
       - rinha-network
     deploy:

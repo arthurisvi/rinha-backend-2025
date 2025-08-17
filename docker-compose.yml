@@ -2,7 +2,7 @@ version: '3.8'
 
 # Template base para as APIs
 x-api-template: &api-template
-  image: arthurisvi/api-php-swoole:1.1
+  image: arthurisvi/api-php-swoole-default:1.0
   environment:
     - APP_ENV=production
     - REDIS_HOST=redis
@@ -47,7 +47,7 @@ services:
 
   # Worker - Payment Processing
   worker_payments:
-    image: arthurisvi/worker-payments-php-swoole:1.1
+    image: arthurisvi/worker-payments-php-swoole-default:1.0
     environment:
       - APP_ENV=production
       - REDIS_HOST=redis

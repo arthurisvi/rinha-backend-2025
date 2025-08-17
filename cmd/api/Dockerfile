@@ -15,7 +15,7 @@ RUN apk add --no-cache --virtual .build-deps \
     libstdc++
 
 # Instalar extensões PHP mínimas
-RUN docker-php-ext-install pcntl sockets \
+RUN docker-php-ext-install pcntl \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && pecl install swoole \

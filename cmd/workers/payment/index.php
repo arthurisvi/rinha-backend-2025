@@ -3,7 +3,6 @@ error_reporting(E_ALL & ~E_WARNING);
 
 use Swoole\Coroutine;
 use Swoole\Coroutine\Channel;
-use Swoole\Coroutine\Redis;
 use Swoole\Coroutine\Http\Client;
 
 class RedisPool
@@ -129,6 +128,7 @@ class PaymentWorker
 
 	public function start(): void
 	{
+		Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
 		echo "🚀 Payment Worker iniciado com {$this->maxConcurrentPayments} corrotinas concorrentes\n";
 
 		Coroutine::create(function () {

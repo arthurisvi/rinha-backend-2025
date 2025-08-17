@@ -156,9 +156,10 @@ $server->on('request', function (Request $request, Response $response) {
 						$results = $redis->zRangeByScore("payments:{$processorName}", $fromTs, $toTs);
 						$totalAmount = 0.0;
 						foreach ($results as $item) {
-							$value = @unserialize($item);
-							if ($value !== false) {
-								$totalAmount += floatval(explode(':', $value)[0]);
+							$parts = explode(':', $item);
+							if (isset($parts[0])) {
+								$amount = floatval($parts[0]);
+								$totalAmount += $amount;
 							}
 						}
 						return [

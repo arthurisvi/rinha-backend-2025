@@ -1,9 +1,10 @@
-FROM php:8.1-cli-alpine
+FROM php:8.4-cli-alpine
 
 # Instalar dependências completas para compilação
 RUN apk add --no-cache --virtual .build-deps \
     build-base \
     autoconf \
+    brotli-dev \
     libtool \
     openssl-dev \
     pcre-dev \
@@ -14,10 +15,10 @@ RUN apk add --no-cache --virtual .build-deps \
     libstdc++
 
 # Instalar extensões PHP para worker
-RUN docker-php-ext-install pcntl sockets \
-    && pecl install redis-5.3.7 \
+RUN docker-php-ext-install pcntl \
+    && pecl install redis \
     && docker-php-ext-enable redis \
-    && pecl install swoole-5.0.3 \
+    && pecl install swoole \
     && docker-php-ext-enable swoole
 
 # Configurações PHP otimizadas para payment worker com corrotinas
@@ -57,16 +58,6 @@ RUN addgroup -g 1001 -S worker && \
     adduser -u 1001 -S worker -G worker
 
 WORKDIR /opt/www
-
-# Instalar Composer
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-
-# Copiar apenas composer.json primeiro (para cache do Docker)
-COPY cmd/workers/payment/composer.json .
-RUN chown worker:worker composer.json
-
-# Instalar dependências do Swoole
-RUN composer install --no-dev --optimize-autoloader --no-interaction
 
 # Copiar código da aplicação
 COPY cmd/workers/payment/index.php .

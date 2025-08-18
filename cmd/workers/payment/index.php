@@ -104,7 +104,18 @@ class PaymentWorker
 	private int $fallbackPort;
 	private int $maxConcurrentPayments;
 	private bool $running = true;
-	private int $totalFailed = 0;
+	private array $processorStatuses = [
+		'default' => [
+			'health' => 'UNKNOWN',
+			'last_checked' => null,
+			'fail_count' => 0,
+		],
+		'fallback' => [
+			'health' => 'UNKNOWN',
+			'last_checked' => null,
+			'fail_count' => 0,
+		],
+	];
 
 	private RedisPool $redisPool;
 	private HttpClientPool $defaultHttpPool;
@@ -145,6 +156,13 @@ class PaymentWorker
 			}
 		});
 
+		Coroutine::create(function () {
+			while ($this->running) {
+				$this->checkProcessorsHealth();
+				Coroutine::sleep(5);
+			}
+		});
+
 		Swoole\Event::wait();
 	}
 
@@ -167,22 +185,23 @@ class PaymentWorker
 		$payload = json_decode($payloadString, true);
 		if (json_last_error() !== JSON_ERROR_NONE) {
 			echo "[ERRO] Falha ao decodificar JSON: " . json_last_error_msg() . "\n";
-			$this->totalFailed++;
 			return;
 		}
 
-		$redisForHost = $this->redisPool->get();
-		// TODO: health-checker + circuit breaker
-		//$bestHost = (int)($redisForHost->get('best-host-processor') ?? 1);
-		$bestHost = 1;
-		$this->redisPool->put($redisForHost);
+		$bestHost = $this->chooseBestProcessor();
+		if (empty($bestHost)) {
+			$this->handleFailedPayment($payload, $bestHost);
+			return;
+		}
 
 		$httpPool = $bestHost === 1 ? $this->defaultHttpPool : $this->fallbackHttpPool;
+
+		$redisForHost = $this->redisPool->get();
+		$this->redisPool->put($redisForHost);
 
 		$client = $httpPool->get();
 		if (!$client) {
 			echo "[ERRO] Não conseguiu obter cliente HTTP\n";
-			$this->totalFailed++;
 			return;
 		}
 
@@ -205,10 +224,10 @@ class PaymentWorker
 			if ($client->statusCode === 200) {
 				$this->handleSuccessfulPayment($payload, $bestHost, $preciseTimestamp);
 			} elseif ($client->statusCode != 422) {
-				$this->handleFailedPayment($payload);
+				$this->handleFailedPayment($payload, $bestHost);
 			}
 		} catch (Throwable $e) {
-			$this->handleFailedPayment($payload);
+			$this->handleFailedPayment($payload, $bestHost);
 		} finally {
 			$httpPool->put($client);
 		}
@@ -217,6 +236,11 @@ class PaymentWorker
 	private function handleSuccessfulPayment(array $payload, int $processorId, float $timestamp): void
 	{
 		$processor = $processorId === 1 ? 'default' : 'fallback';
+
+		$this->processorStatuses[$processor]['fail_count'] = 0;
+		$this->processorStatuses[$processor]['health'] = 'UP';
+		$this->processorStatuses[$processor]['last_checked'] = time();
+
 		$member = $payload['amount'] . ':' . $payload['correlationId'];
 		$key = "payments:{$processor}";
 
@@ -225,14 +249,23 @@ class PaymentWorker
 			$result = $redis->zAdd($key, $timestamp, (string)$member);
 			if ($result != 1) {
 				echo "[ERRO] Falha ao persistir no Redis para correlationId: {$payload['correlationId']}\n";
-				$this->totalFailed++;
 			}
 			$this->redisPool->put($redis);
 		}
 	}
 
-	private function handleFailedPayment(array $payload): void
+	private function handleFailedPayment(array $payload, int $processorId): void
 	{
+		if (!empty($processorId)) {
+			$processor = $processorId == 1 ? 'default' : 'fallback';
+			$this->processorStatuses[$processor]['fail_count']++;
+
+			if ($this->processorStatuses[$processor]['fail_count'] >= 3) {
+				$this->processorStatuses[$processor]['health'] = 'DOWN';
+				$this->processorStatuses[$processor]['last_checked'] = time();
+			}
+		}
+
 		Coroutine::sleep(0.1);
 
 		$redis = $this->redisPool->get();
@@ -248,9 +281,86 @@ class PaymentWorker
 		$this->running = false;
 	}
 
-	public function getTotalFailedPayments(): int
+	public function checkProcessorsHealth(): void
 	{
-		return $this->totalFailed;
+		Coroutine::create(function () {
+			$status = $this->checkProcessor('default');
+			$this->processorStatuses['default'] = $status;
+		});
+		Coroutine::create(function () {
+			$status = $this->checkProcessor('fallback');
+			$this->processorStatuses['fallback'] = $status;
+		});
+	}
+
+	private function checkProcessor(string $name): array
+	{
+		$host = $name === 'default' ? $this->defaultHost : $this->fallbackHost;
+		$port = $name === 'default' ? $this->defaultPort : $this->fallbackPort;
+
+		$client = new Client($host, $port);
+		$client->setHeaders([
+			'Accept' => 'application/json',
+			'Content-Type' => 'application/json',
+		]);
+
+		$status = [
+			'health' => 'UNKNOWN',
+		];
+
+		try {
+			$client->get('/payments/service-health');
+
+			$body = json_decode($client->body, true);
+
+			if ($body) {
+				$status['last_checked'] = time();
+				$status['health'] = $body['failing'] ? 'DOWN' : 'UP';
+				$status['min_ms'] = $body['minResponseTime'] ?? null;
+			}
+		} catch (\Throwable $e) {
+			$status['health'] = 'DOWN';
+		}
+
+		return $status;
+	}
+
+	private function chooseBestProcessor(): int
+	{
+		$cooldown = 2.5; // segundos
+
+		$default = $this->processorStatuses['default'];
+		$fallback = $this->processorStatuses['fallback'];
+
+		// 1) Se o default está UP, usa ele
+		if ($default['health'] === 'UP') {
+			return 1;
+		}
+
+		// 2) Se o fallback está UP, usa ele
+		if ($fallback['health'] === 'UP') {
+			return 2;
+		}
+
+		// 3) Se ambos estão DOWN, tenta half-open
+		$now = time();
+
+		if ($default['health'] === 'DOWN') {
+			$lastFail = $default['last_checked'] ?? 0;
+			if ($now - $lastFail >= $cooldown) {
+				return 1; // tenta reabrir default
+			}
+		}
+
+		if ($fallback['health'] === 'DOWN') {
+			$lastFail = $fallback['last_checked'] ?? 0;
+			if ($now - $lastFail >= $cooldown) {
+				return 2; // tenta reabrir fallback
+			}
+		}
+
+		// 4) Se nenhum está pronto → requeue
+		return 0;
 	}
 }
 
